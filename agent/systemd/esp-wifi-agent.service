@@ -1,0 +1,31 @@
+[Unit]
+Description=ESP32 extender WiFi handoff agent
+Documentation=man:esp-wifi-agent(8)
+Wants=NetworkManager.service
+After=NetworkManager.service
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/esp-wifi-agent -c /etc/esp-wifi-agent.conf
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+NotifyAccess=main
+WatchdogSec=30
+TimeoutStartSec=30
+
+# --- hardening ------------------------------------------------------
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=no
+NoNewPrivileges=yes
+ReadWritePaths=/var/lib/esp-wifi-agent
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

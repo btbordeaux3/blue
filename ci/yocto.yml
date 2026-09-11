@@ -1,0 +1,38 @@
+name: yocto
+
+# Full poky + meta-blue image build. Heavy (hours on first run) so it is
+# only triggered manually, and cached between runs with actions/cache.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache poky sstate/dl
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/sstate-cache
+            build/downloads
+          key: yocto-${{ runner.os }}-${{ hashFiles('meta-blue/kas.yml') }}
+
+      - name: Install kas
+        run: pip install kas
+
+      - name: Build blue-image with kas
+        env:
+          KAS_WORK_DIR: ${{ github.workspace }}/build
+        run: |
+          kas build meta-blue/kas.yml
+          ls -la build/tmp*/deploy/images/blue-handheld/ || true
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: blue-image
+          path: build/tmp*/deploy/images/blue-handheld/**/*.{ext4,tar.gz,wic,dtbo,ko}
+          if-no-files-found: warn

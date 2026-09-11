@@ -1,0 +1,49 @@
+# kas project manifest - reproducible poky + meta-blue build.
+#
+# Requres kas (https://github.com/siemens/kas):
+#   pip install kas
+#   kas build meta-blue/kas.yml
+# or in the ci/ workflow (manual trigger) with the kas docker image.
+
+header:
+  version: 14
+
+machine: blue-handheld
+distro: poky
+target: blue-image
+
+repos:
+  meta-blue:
+    path: ./meta-blue
+
+  poky:
+    url: https://git.yoctoproject.org/git/poky
+    refspec: scarthgap
+    layers:
+      meta:
+      meta-poky:
+      meta-yocto-bsp:
+
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    refspec: scarthgap
+    layers:
+      meta-oe:
+      meta-networking:
+      meta-python:
+
+bblayers_conf_header:
+  standard: |
+    POKY_BBLAYERS_CONF_VERSION = "2"
+    BBPATH = "${TOPDIR}"
+    BBFILES_TOP = ""
+
+local_conf_header:
+  standard: |
+    CONF_VERSION = "2"
+    PACKAGE_CLASSES = "package_rpm"
+    BB_NUMBER_THREADS = "8"
+    PARALLEL_MAKE = "-j 8"
+    USER_CLASSES = "buildstats image-buildinfo"
+    PATCHRESOLVE = "noop"
+    INIT_MANAGER = "systemd"

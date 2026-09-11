@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# agentctl - control/inspect esp-wifi-agent from the command line.
+set -euo pipefail
+
+SERVICE=esp-wifi-agent
+CONF=${CONF:-/etc/esp-wifi-agent.conf}
+SERIAL=${SERIAL:-/dev/ttyUSB0}
+
+usage() {
+    cat <<'EOF'
+usage: agentctl <command>
+
+  status     daemon + NetworkManager + ESP32 tether status
+  ap up      tell the ESP32 to bring up the extender AP (USB command chan)
+  ap down    tell the ESP32 to drop the extender AP
+  previous   show which network will be restored after the extender goes away
+EOF
+}
+
+status() {
+    echo "== systemd =="
+    systemctl --no-pager --lines=5 status "$SERVICE" 2>/dev/null || \
+        systemctl --user --no-pager --lines=5 status "$SERVICE"
+    echo "== active connection =="
+    nmcli -t -f NAME,TYPE,DEVICE connection show --active | grep wifi || \
+        echo "(no active wifi connection)"
+    echo "== ESP32 tether =="
+    if [ -e "$SERIAL" ]; then
+        echo "serial link present: $SERIAL"
+    else
+        echo "serial link NOT present: $SERIAL"
+    fi
+    if [ -e /dev/espnet ]; then
+        echo "kernel driver: /dev/espnet present"
+    else
+        echo "kernel driver: /dev/espnet absent (insmod espnet.ko)"
+    fi
+}
+
+cmd_ap() {
+    local state=$1
+    [ -e "$SERIAL" ] || { echo "error: $SERIAL not present (plug the ESP32 in)" >&2; exit 1; }
+    printf '{"cmd":"ap","state":%d}\n' "$state" > "$SERIAL"
+    echo "sent ap $( [ "$state" = 1 ] && echo up || echo down ) -> $SERIAL"
+}
+
+case "${1:-}" in
+    status)   status ;;
+    ap)       [ $# -ge 2 ] || { usage; exit 1; }
+              case "$2" in up) cmd_ap 1;; down) cmd_ap 0;; *) usage; exit 1;; esac ;;
+    previous) cat "${STATE_FILE:-$(grep '^state_file' "$CONF" 2>/dev/null | awk '{print $3}')}" \
+              2>/dev/null || echo "(none recorded)" ;;
+    *)        usage; exit 2 ;;
+esac

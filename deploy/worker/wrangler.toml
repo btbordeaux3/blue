@@ -1,0 +1,7 @@
+name = "rf-map-api"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "RF_MAP"
+id = "fac4183e1bbc4c15be25ef5f7a32caf2"

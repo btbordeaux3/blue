@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BLUE RF Map</title>
+<style>
+  :root {
+    --bg: #0a0e17;
+    --card: #111827;
+    --border: #1f2937;
+    --text: #e5e7eb;
+    --dim: #6b7280;
+    --accent: #3b82f6;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --orange: #f97316;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Fira Code', monospace; background: var(--bg); color: var(--text); padding: 20px; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .subtitle { color: var(--dim); font-size: 0.8rem; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .card h2 { font-size: 0.85rem; color: var(--dim); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+  .stat { font-size: 2rem; font-weight: bold; }
+  .stat.green { color: var(--green); }
+  .stat.yellow { color: var(--yellow); }
+  .stat.red { color: var(--red); }
+  .stat.blue { color: var(--accent); }
+  .stat.orange { color: var(--orange); }
+  .label { font-size: 0.75rem; color: var(--dim); margin-top: 4px; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .status-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.off { background: var(--red); }
+  .heatmap-container { overflow-x: auto; }
+  .heatmap { display: grid; gap: 2px; margin-top: 8px; }
+  .heatmap-cell { width: 100%; aspect-ratio: 1; border-radius: 2px; min-width: 20px; }
+  .heatmap-label { font-size: 0.65rem; color: var(--dim); text-align: center; padding: 2px; }
+  .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 12px; }
+  .bar { flex: 1; border-radius: 2px 2px 0 0; min-width: 8px; transition: height 0.3s; position: relative; }
+  .bar:hover { opacity: 0.8; }
+  .bar-label { position: absolute; bottom: -18px; left: 50%; transform: translateX(-50%); font-size: 0.55rem; color: var(--dim); white-space: nowrap; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+  th { text-align: left; color: var(--dim); padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  td { padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .weak { color: var(--red); }
+  .good { color: var(--green); }
+  .refresh-bar { height: 2px; background: var(--border); border-radius: 1px; margin-bottom: 16px; overflow: hidden; }
+  .refresh-bar .fill { height: 100%; background: var(--accent); transition: width 1s linear; }
+  .api-input { display: flex; gap: 8px; margin-bottom: 16px; }
+  .api-input input { flex: 1; background: var(--card); border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 4px; font-family: inherit; font-size: 0.8rem; }
+  .api-input button { background: var(--accent); color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 0.8rem; }
+  .api-input button:hover { opacity: 0.9; }
+  #log { max-height: 200px; overflow-y: auto; font-size: 0.7rem; color: var(--dim); margin-top: 8px; }
+  #log div { padding: 2px 0; border-bottom: 1px solid var(--border); }
+  #houseMapWrap { position: relative; }
+  #houseMap { width: 100%; max-height: 560px; display: block; border-radius: 6px; background: #0a1122; }
+  #houseTooltip { position: absolute; pointer-events: none; background: #0b1220; border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 4px; font-size: 0.7rem; display: none; white-space: nowrap; z-index: 10; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.7rem; color: var(--dim); margin-top: 8px; }
+  .legend span { display: flex; align-items: center; gap: 5px; }
+  .legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+</style>
+</head>
+<body>
+
+<h1><span class="status-dot" id="statusDot"></span>BLUE RF Map</h1>
+<div class="subtitle">Adaptive WiFi Repeater &mdash; Signal Strength Visualization</div>
+
+<div class="api-input">
+  <input type="text" id="apiUrl" placeholder="Worker API URL" value="https://rf-map-api.housemapper.workers.dev">
+  <button onclick="connect()">Connect</button>
+</div>
+
+<div class="refresh-bar"><div class="fill" id="refreshFill" style="width:0%"></div></div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Total Entries</h2>
+    <div class="stat blue" id="totalEntries">--</div>
+    <div class="label">fingerprint samples collected</div>
+  </div>
+  <div class="card">
+    <h2>Weak Zones</h2>
+    <div class="stat red" id="weakCount">--</div>
+    <div class="label">entries below -75 dBm</div>
+  </div>
+  <div class="card">
+    <h2>Coverage</h2>
+    <div class="stat green" id="coverage">--%</div>
+    <div class="label">signal above threshold</div>
+  </div>
+  <div class="card">
+    <h2>Last Update</h2>
+    <div class="stat" id="lastUpdate" style="font-size:1rem">--</div>
+    <div class="label" id="lastUpdateAgo"></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Repeater</h2>
+    <div class="stat" id="repeaterStatus" style="font-size:1.1rem">--</div>
+    <div class="label" id="repeaterSource">waiting for data</div>
+  </div>
+  <div class="card">
+    <h2>ML Model</h2>
+    <div class="stat green" id="mlStatus">--</div>
+    <div class="label" id="mlDetail">no model data yet</div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+  <h2>House Coverage Map &mdash; Distance Rings from Base</h2>
+  <div id="houseMapWrap">
+    <canvas id="houseMap" width="800" height="520"></canvas>
+    <div id="houseTooltip"></div>
+  </div>
+  <div class="legend">
+    <span><span class="swatch" style="background:#3b82f6"></span>Base station</span>
+    <span><span class="swatch" style="background:#22c55e"></span>Strong (&ge; -60 dBm)</span>
+    <span><span class="swatch" style="background:#eab308"></span>Ok (-70 to -60)</span>
+    <span><span class="swatch" style="background:#f97316"></span>Weak (-80 to -70)</span>
+    <span><span class="swatch" style="background:#ef4444"></span>Very weak (&lt; -80)</span>
+    <span id="houseMapHint"></span>
+  </div>
+  <div class="label">Distance is estimated from signal strength (path-loss model). Walk around with a phone and the rings fill in automatically &mdash; each dot is a router/AP seen at that distance.</div>
+</div>
+
+<div class="grid">
+  <div class="card" style="grid-column: span 2">
+    <h2>Signal by Hour (Average RSSI)</h2>
+    <div class="bar-chart" id="hourChart"></div>
+  </div>
+  <div class="card">
+    <h2>RSSI Distribution</h2>
+    <div class="bar-chart" id="rssiChart"></div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+  <h2>Signal Heatmap &mdash; Hour vs AP</h2>
+  <div class="heatmap-container">
+    <div class="heatmap" id="heatmap"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Recent Events</h2>
+  <table>
+    <thead><tr><th>Time</th><th>AP Hash</th><th>RSSI</th><th>Hour</th><th>Status</th></tr></thead>
+    <tbody id="eventsTable"></tbody>
+  </table>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Log</h2>
+  <div id="log"></div>
+</div>
+
+<div style="margin-top:32px; padding-top:20px; border-top:1px solid var(--border)">
+  <h2 style="font-size:1.1rem; margin-bottom:4px"><span class="status-dot" id="metricsDot"></span>Device Metrics</h2>
+  <div class="subtitle">Real-time system health from ESP32 devices</div>
+</div>
+
+<div class="grid" id="metricsGrid" style="margin-top:16px">
+  <div class="card">
+    <h2>WiFi Uptime</h2>
+    <div class="stat green" id="wifiUptime">--</div>
+    <div class="label" id="wifiDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>ESPNOW Link</h2>
+    <div class="stat blue" id="espnowTx">--</div>
+    <div class="label" id="espnowDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>Heap Memory</h2>
+    <div class="stat" id="heapFree">--</div>
+    <div class="label" id="heapDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>Scan Performance</h2>
+    <div class="stat blue" id="scanPerf">--</div>
+    <div class="label" id="scanDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>RSSI Signal</h2>
+    <div class="stat" id="rssiAvg">--</div>
+    <div class="label" id="rssiDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>Power & Sleep</h2>
+    <div class="stat" id="sleepStats">--</div>
+    <div class="label" id="sleepDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>Activation Latency</h2>
+    <div class="stat" id="latencyAvg">--</div>
+    <div class="label" id="latencyDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>Deadline Compliance</h2>
+    <div class="stat" id="deadlinePct">--</div>
+    <div class="label" id="deadlineDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>Repeater Activity</h2>
+    <div class="stat" id="repeaterStats">--</div>
+    <div class="label" id="repeaterDetail">--</div>
+  </div>
+  <div class="card">
+    <h2>Event Log</h2>
+    <div class="stat" id="eventCount">--</div>
+    <div class="label" id="eventDetail">--</div>
+  </div>
+</div>
+
+<script>
+let API_URL = '';
+let pollTimer = null;
+
+function connect() {
+  API_URL = document.getElementById('apiUrl').value.trim();
+  if (!API_URL) return;
+  localStorage.setItem('rf_api_url', API_URL);
+  log('Connected to ' + API_URL);
+  fetchData();
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(fetchData, 10000);
+}
+
+function log(msg) {
+  const el = document.getElementById('log');
+  const d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+  el.prepend(d);
+  if (el.children.length > 50) el.lastChild.remove();
+}
+
+async function fetchData() {
+  if (!API_URL) return;
+  try {
+    const [mapRes, statusRes, histRes, metricsRes] = await Promise.all([
+      fetch(API_URL + '/api/map'),
+      fetch(API_URL + '/api/status'),
+      fetch(API_URL + '/api/history?limit=50'),
+      fetch(API_URL + '/api/metrics').catch(() => ({ json: () => null })),
+    ]);
+    const map = await mapRes.json();
+    const status = await statusRes.json();
+    const hist = await histRes.json();
+    const metrics = await metricsRes.json().catch(() => null);
+
+    document.getElementById('statusDot').className = 'status-dot on';
+
+    document.getElementById('totalEntries').textContent = status.total_entries || map.total || 0;
+    document.getElementById('weakCount').textContent = status.weak_count || 0;
+
+    const total = status.total_entries || 1;
+    const good = total - (status.weak_count || 0);
+    const pct = Math.round((good / total) * 100);
+    document.getElementById('coverage').textContent = pct + '%';
+    document.getElementById('coverage').className = 'stat ' + (pct > 80 ? 'green' : pct > 50 ? 'yellow' : 'red');
+
+    if (status.last_update) {
+      const d = new Date(status.last_update);
+      document.getElementById('lastUpdate').textContent = d.toLocaleTimeString();
+      const ago = Math.round((Date.now() - status.last_update) / 1000);
+      document.getElementById('lastUpdateAgo').textContent = ago + 's ago';
+    }
+
+    renderHourChart(map.entries || []);
+    renderRssiChart(map.entries || []);
+    renderHeatmap(map.entries || []);
+    renderHouseMap(map.entries || []);
+    renderEvents(hist.entries || []);
+    renderMetrics(metrics);
+    renderDecision(status.decision);
+
+    animateRefreshBar();
+  } catch (e) {
+    document.getElementById('statusDot').className = 'status-dot off';
+    log('Error: ' + e.message);
+  }
+}
+
+function rssiColor(rssi) {
+  if (rssi >= -50) return '#22c55e';
+  if (rssi >= -60) return '#4ade80';
+  if (rssi >= -70) return '#eab308';
+  if (rssi >= -80) return '#f97316';
+  return '#ef4444';
+}
+
+function renderHourChart(entries) {
+  const hourly = {};
+  for (let h = 0; h < 24; h++) hourly[h] = [];
+  for (const e of entries) {
+    const h = e.hour != null ? e.hour : new Date(e.timestamp).getHours();
+    if (hourly[h]) hourly[h].push(e.rssi_avg || e.rssi || -80);
+  }
+  const container = document.getElementById('hourChart');
+  container.innerHTML = '';
+  const vals = [];
+  for (let h = 0; h < 24; h++) {
+    const arr = hourly[h];
+    const avg = arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : -80;
+    vals.push(avg);
+  }
+  const min = Math.min(...vals) - 5;
+  const max = Math.max(...vals) + 5;
+  const range = max - min || 1;
+  for (let h = 0; h < 24; h++) {
+    const pct = ((vals[h] - min) / range) * 100;
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.height = Math.max(4, pct) + '%';
+    bar.style.background = rssiColor(vals[h]);
+    bar.title = h + ':00 — ' + Math.round(vals[h]) + ' dBm';
+    if (h % 3 === 0) {
+      const lbl = document.createElement('div');
+      lbl.className = 'bar-label';
+      lbl.textContent = h + 'h';
+      bar.appendChild(lbl);
+    }
+    container.appendChild(bar);
+  }
+}
+
+function renderRssiChart(entries) {
+  const buckets = { '>-50': 0, '-60': 0, '-70': 0, '-80': 0, '<-80': 0 };
+  for (const e of entries) {
+    const r = e.rssi_avg || e.rssi || -80;
+    if (r >= -50) buckets['>-50']++;
+    else if (r >= -60) buckets['-60']++;
+    else if (r >= -70) buckets['-70']++;
+    else if (r >= -80) buckets['-80']++;
+    else buckets['<-80']++;
+  }
+  const container = document.getElementById('rssiChart');
+  container.innerHTML = '';
+  const colors = ['#22c55e', '#4ade80', '#eab308', '#f97316', '#ef4444'];
+  const max = Math.max(...Object.values(buckets), 1);
+  let i = 0;
+  for (const [label, count] of Object.entries(buckets)) {
+    const pct = (count / max) * 100;
+    const bar = document.createElement('div');
+    bar.className = 'bar';
+    bar.style.height = Math.max(4, pct) + '%';
+    bar.style.background = colors[i];
+    bar.title = label + ' dBm: ' + count;
+    const lbl = document.createElement('div');
+    lbl.className = 'bar-label';
+    lbl.textContent = label;
+    bar.appendChild(lbl);
+    container.appendChild(bar);
+    i++;
+  }
+}
+
+function renderHeatmap(entries) {
+  const container = document.getElementById('heatmap');
+  container.innerHTML = '';
+  const aps = [...new Set(entries.map(e => e.bssid_hash))].slice(0, 12);
+  const hours = [...new Set(entries.map(e => e.hour))].sort((a, b) => a - b);
+  if (!aps.length || !hours.length) {
+    container.innerHTML = '<div style="color:var(--dim);padding:20px;text-align:center">No data yet. Waiting for base station...</div>';
+    return;
+  }
+  const grid = {};
+  for (const e of entries) {
+    grid[`${e.bssid_hash}_${e.hour}`] = e.rssi_avg || e.rssi || -80;
+  }
+  const labelRow = document.createElement('div');
+  labelRow.style.display = 'contents';
+  const corner = document.createElement('div');
+  corner.className = 'heatmap-label';
+  labelRow.appendChild(corner);
+  for (const h of hours) {
+    const lbl = document.createElement('div');
+    lbl.className = 'heatmap-label';
+    lbl.textContent = h + 'h';
+    labelRow.appendChild(lbl);
+  }
+  container.appendChild(labelRow);
+  container.style.gridTemplateColumns = `80px repeat(${hours.length}, 1fr)`;
+  for (const ap of aps) {
+    const rowLabel = document.createElement('div');
+    rowLabel.className = 'heatmap-label';
+    rowLabel.style.textAlign = 'right';
+    rowLabel.style.paddingRight = '6px';
+    rowLabel.textContent = 'AP ' + ap.toString(16).slice(-4);
+    container.appendChild(rowLabel);
+    for (const h of hours) {
+      const cell = document.createElement('div');
+      cell.className = 'heatmap-cell';
+      const rssi = grid[`${ap}_${h}`];
+      cell.style.background = rssi != null ? rssiColor(rssi) : '#1f2937';
+      cell.title = `AP ${ap.toString(16).slice(-4)} @ ${h}:00 — ${rssi != null ? Math.round(rssi) + ' dBm' : 'no data'}`;
+      container.appendChild(cell);
+    }
+  }
+}
+
+function rssiToMeters(rssi) {
+  // mirror of worker: indoor path-loss, -30 dBm @ 1m, exponent 2.8
+  if (rssi >= -30) return 0.5;
+  const n = 2.8;
+  return Math.round(Math.pow(10, (-30 - rssi) / (10 * n)));
+}
+
+function renderHouseMap(entries) {
+  const canvas = document.getElementById('houseMap');
+  const tooltip = document.getElementById('houseTooltip');
+  const hint = document.getElementById('houseMapHint');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = 400, cy = 250;
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = '11px monospace';
+  hint.textContent = '';
+
+  // Aggregate by AP only: the same router seen at different hours is ONE dot.
+  // (Keying by AP+hour made one AP into many dots and reshuffled positions as
+  // the hour set changed, which made the map look like it "moved".)
+  const MAX_METERS = 20; // match worker ring cap
+  const aps = new Map();
+  for (const e of entries) {
+    if (e.bssid_hash == null) continue;
+    const key = e.bssid_hash;
+    if (!aps.has(key)) {
+      aps.set(key, {
+        hash: e.bssid_hash,
+        rssi: e.rssi_avg != null ? e.rssi_avg : e.rssi,
+        ring: e.ring_avg != null ? e.ring_avg : e.ring,
+        samples: 0,
+      });
+    }
+    const ap = aps.get(key);
+    if (e.ring_avg != null) ap.ring = e.ring_avg;
+    if (e.rssi_avg != null) ap.rssi = e.rssi_avg;
+    ap.samples++;
+  }
+  const list = [...aps.values()].filter(a => a.rssi != null);
+  if (!list.length) {
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = 'center';
+    ctx.fillText('No AP data yet. Waiting for base station...', cx, cy);
+    hint.textContent = 'No data yet';
+    return;
+  }
+
+  // Clamp ring estimates to the 20m cap so a stray old 56m reading cannot
+  // compress the whole map or nudge the ring circles every refresh.
+  const metersOf = (a) => {
+    const raw = a.ring != null ? a.ring : rssiToMeters(a.rssi);
+    return Math.max(0.5, Math.min(raw, MAX_METERS));
+  };
+  const maxM = MAX_METERS;
+  const usable = Math.min(W * 0.30, H * 0.54);
+  const scale = usable / maxM;
+
+  // rings
+  const ringMeters = [1, 2, 5, 10, 15, MAX_METERS];
+  ctx.strokeStyle = 'rgba(59,130,246,0.18)';
+  ctx.fillStyle = '#6b7280';
+  ctx.textAlign = 'left';
+  ctx.lineWidth = 1;
+  for (const m of ringMeters) {
+    const r = m * scale;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillText(m + 'm', cx + r + 6, cy + 4);
+  }
+
+  // radius legend
+  hint.textContent = 'max estimated distance ' + maxM + 'm · ' + list.length + ' APs mapped';
+
+  // base station
+  ctx.beginPath();
+  ctx.arc(cx, cy, 7, 0, Math.PI * 2);
+  ctx.fillStyle = '#3b82f6';
+  ctx.fill();
+  ctx.strokeStyle = '#93c5fd';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.fillStyle = '#93c5fd';
+  ctx.textAlign = 'center';
+  ctx.fillText('BASE', cx, cy - 16);
+
+  // deterministic per-AP angle from its hash, so positions NEVER change as
+  // the AP set grows/shrinks (that reshuffle was the "it moved" bug). Golden
+  // angle keeps dots from piling up on one side.
+  const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+  const angleOf = (h) => {
+    // fold the 32-bit hash into [0,1) with good mixing
+    const h1 = (h >>> 0) / 4294967296;
+    return h1 * Math.PI * 2 + GOLDEN;
+  };
+  const dots = [];
+  for (const ap of list) {
+    const angle = angleOf(ap.hash || 0);
+    // ring distance
+    const meters = metersOf(ap);
+    const r = Math.min(meters * scale, usable * 0.98);
+    const x = cx + Math.cos(angle) * r;
+    const y = cy + Math.sin(angle) * r;
+    const color = rssiColor(ap.rssi);
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.strokeStyle = ap.rssi < -75 ? '#fff' : 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = ap.rssi < -75 ? 2 : 1;
+    ctx.stroke();
+    dots.push({ x, y, ap });
+    // hash label under dot (short form)
+    if (list.length <= 30) {
+      ctx.fillStyle = '#6b7280';
+      ctx.font = '9px monospace';
+      ctx.fillText('0x' + (ap.hash || 0).toString(16).slice(-4), x, y + 16);
+    }
+  }
+
+  const move = (ev) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = W / rect.width;
+    const scaleY = H / rect.height;
+    const mx = (ev.clientX - rect.left) * scaleX;
+    const my = (ev.clientY - rect.top) * scaleY;
+    let hit = null, best = 14;
+    for (const d of dots) {
+      const dist = Math.hypot(d.x - mx, d.y - my);
+      if (dist < best) { best = dist; hit = d; }
+    }
+    if (hit) {
+      const t = new Date();
+      const meters = metersOf(hit.ap);
+      tooltip.style.display = 'block';
+      tooltip.style.left = (ev.clientX - rect.left + 12) + 'px';
+      tooltip.style.top = (ev.clientY - rect.top + 12) + 'px';
+      tooltip.textContent =
+        'AP 0x' + (hit.ap.hash || 0).toString(16).slice(-8) +
+        ' · ~' + Math.round(meters) + 'm from base' +
+        ' · ' + Math.round(hit.ap.rssi) + ' dBm' +
+        ' · ' + hit.ap.samples + ' sample(s)';
+    } else {
+      tooltip.style.display = 'none';
+    }
+  };
+  canvas.onmousemove = move;
+  canvas.onmouseleave = () => { tooltip.style.display = 'none'; };
+}
+
+function renderEvents(entries) {
+  const tbody = document.getElementById('eventsTable');
+  tbody.innerHTML = '';
+  const recent = entries.slice(-20).reverse();
+  for (const e of recent) {
+    const tr = document.createElement('tr');
+    const t = new Date(e.timestamp);
+    const rssi = e.rssi_avg || e.rssi || 0;
+    tr.innerHTML = `<td>${t.toLocaleTimeString()}</td><td>0x${(e.bssid_hash || 0).toString(16).slice(-8)}</td><td class="${rssi < -75 ? 'weak' : 'good'}">${Math.round(rssi)} dBm</td><td>${e.hour != null ? e.hour + ':00' : '--'}</td><td>${e.is_weak ? '<span class="weak">WEAK</span>' : '<span class="good">OK</span>'}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderDecision(d) {
+  if (!d) return;
+  const names = {
+    base_ml: 'Base ML prediction',
+    mobile_low: 'Mobile detected low signal',
+    base_manual: 'Manual override',
+    none: 'n/a',
+  };
+  const el = document.getElementById('repeaterStatus');
+  const srcEl = document.getElementById('repeaterSource');
+  const active = !!d.active;
+  const isMl = active && d.source === 2;
+  el.textContent = active ? 'ON' : 'OFF';
+  el.className = active ? (isMl ? 'stat orange' : 'stat green') : 'stat';
+  const name = names[d.source_name] || 'n/a';
+  const conf = d.confidence ? ' — ' + Math.round(d.confidence * 100) + '% confidence' : '';
+  srcEl.textContent = active
+    ? (name + conf + (isMl ? ' (predicted before drop)' : ''))
+    : 'extender not running';
+
+  const m = d.model || {};
+  const mlEl = document.getElementById('mlStatus');
+  const mlDet = document.getElementById('mlDetail');
+  if (m.trained) {
+    mlEl.textContent = 'TRAINED';
+    mlEl.className = 'stat green';
+    mlDet.textContent = m.samples + ' samples · ' + m.pos + ' weak · predicting dead zones & times';
+  } else if (m.samples) {
+    mlEl.textContent = 'COLLECTING';
+    mlEl.className = 'stat yellow';
+    mlDet.textContent = m.samples + ' samples (' + m.pos + ' weak) before base can act';
+  } else {
+    mlEl.textContent = '--';
+    mlEl.className = 'stat';
+    mlDet.textContent = 'no model data yet';
+  }
+}
+
+function animateRefreshBar() {
+  const fill = document.getElementById('refreshFill');
+  fill.style.transition = 'none';
+  fill.style.width = '0%';
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      fill.style.transition = 'width 10s linear';
+      fill.style.width = '100%';
+    });
+  });
+}
+
+function renderMetrics(m) {
+  if (!m || m.error) {
+    document.getElementById('metricsDot').className = 'status-dot off';
+    document.getElementById('wifiUptime').textContent = 'No data';
+    return;
+  }
+  document.getElementById('metricsDot').className = 'status-dot on';
+
+  const w = m.wifi || {};
+  const uptime = w.uptime_pct != null ? w.uptime_pct.toFixed(1) + '%' : '--';
+  document.getElementById('wifiUptime').textContent = uptime;
+  document.getElementById('wifiUptime').className = 'stat ' + (w.uptime_pct > 80 ? 'green' : w.uptime_pct > 50 ? 'yellow' : 'red');
+  document.getElementById('wifiDetail').textContent = (w.connects || 0) + ' connects, ' + (w.connect_ms_avg || 0).toFixed(0) + 'ms avg';
+
+  const e = m.espnow || {};
+  document.getElementById('espnowTx').textContent = (e.tx || 0) + ' TX';
+  document.getElementById('espnowDetail').textContent = (e.tx_fail || 0) + ' fail, ' + (e.rx || 0) + ' RX, ' + (e.tx_us_avg || 0).toFixed(0) + 'us avg';
+
+  const hp = m.health || {};
+  const heapPct = hp.heap_free ? Math.round(hp.heap_free / 1024) : 0;
+  document.getElementById('heapFree').textContent = heapPct + ' KB';
+  document.getElementById('heapFree').className = 'stat ' + (hp.heap_free > 40000 ? 'green' : hp.heap_free > 20000 ? 'yellow' : 'red');
+  document.getElementById('heapDetail').textContent = 'min ' + (hp.heap_min ? Math.round(hp.heap_min / 1024) : '--') + ' KB, PM stack ' + (hp.pm_stack || '--') + 'B';
+
+  const sc = m.scan || {};
+  document.getElementById('scanPerf').textContent = (sc.count || 0) + ' scans';
+  document.getElementById('scanDetail').textContent = 'avg ' + (sc.time_ms_avg || 0).toFixed(0) + 'ms, worst ' + (sc.time_ms_worst || 0).toFixed(0) + 'ms, ' + (sc.ap_count_avg || 0).toFixed(0) + ' APs';
+
+  const r = m.rssi || {};
+  const rssiVal = r.mean != null ? r.mean.toFixed(1) : '--';
+  document.getElementById('rssiAvg').textContent = rssiVal + ' dBm';
+  document.getElementById('rssiAvg').className = 'stat ' + (r.mean > -60 ? 'green' : r.mean > -75 ? 'yellow' : 'red');
+  document.getElementById('rssiDetail').textContent = 'stddev ' + (r.stddev || 0).toFixed(1) + ', range [' + (r.min || '--') + ', ' + (r.max || '--') + ']';
+
+  const pw = m.power || {};
+  document.getElementById('sleepStats').textContent = (pw.sleeps || 0) + ' sleeps';
+  document.getElementById('sleepDetail').textContent = (pw.sleep_ms || 0) + 'ms total';
+
+  const lt = m.latency || {};
+  const ltAvg = lt.activation_ms_avg != null ? lt.activation_ms_avg.toFixed(0) : '--';
+  document.getElementById('latencyAvg').textContent = ltAvg + ' ms';
+  document.getElementById('latencyAvg').className = 'stat ' + (lt.activation_ms_avg < 3000 ? 'green' : lt.activation_ms_avg < 5000 ? 'yellow' : 'red');
+  document.getElementById('latencyDetail').textContent = 'worst ' + (lt.activation_ms_worst || '--') + 'ms, deadline ' + (lt.deadline_ms || 5000) + 'ms';
+
+  const met = lt.deadline_met || 0;
+  const missed = lt.deadline_missed || 0;
+  const total = met + missed;
+  const dlPct = total > 0 ? Math.round((met / total) * 100) : '--';
+  document.getElementById('deadlinePct').textContent = dlPct + '%';
+  document.getElementById('deadlinePct').className = 'stat ' + (dlPct > 90 ? 'green' : dlPct > 70 ? 'yellow' : 'red');
+  document.getElementById('deadlineDetail').textContent = met + ' met, ' + missed + ' missed of ' + total;
+
+  document.getElementById('repeaterStats').textContent = (pw.repeater_activations || 0) + ' activations';
+  document.getElementById('repeaterDetail').textContent = (pw.repeater_ms || 0) + 'ms active';
+
+  const ev = m.events || {};
+  document.getElementById('eventCount').textContent = (ev.logged || 0) + ' events';
+  document.getElementById('eventDetail').textContent = (ev.dropped || 0) + ' dropped';
+}
+
+const saved = localStorage.getItem('rf_api_url');
+if (saved) {
+  document.getElementById('apiUrl').value = saved;
+}
+connect();
+</script>
+</body>
+</html>

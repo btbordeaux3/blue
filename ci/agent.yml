@@ -1,0 +1,40 @@
+name: agent
+
+on:
+  push:
+    paths: ['agent/**']
+  pull_request:
+    paths: ['agent/**']
+
+jobs:
+  build-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libnm-dev libglib2.0-dev
+      - name: Configure
+        run: cmake -S agent -B build -G Ninja -DBUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # The pure-C core (decision + state) has no libnm/glib dependency, so it
+  # cross-compiles without a target sysroot - a real "does it build for the
+  # product SoC" check that runs in CI without hardware.
+  cross-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Cross compile core + tests
+        run: |
+          cmake -S agent -B build-arm64 \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/Toolchain-aarch64.cmake \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY
+          cmake --build build-arm64 --target test_decision

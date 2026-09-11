@@ -1,0 +1,51 @@
+name: kmod
+
+on:
+  push:
+    paths: ['kmod/**']
+  pull_request:
+    paths: ['kmod/**']
+
+jobs:
+  build-host-kernel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Kernel headers for running kernel
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y linux-headers-$(uname -r) kmod
+      - name: Build modules (Kbuild)
+        run: make -C kmod
+      - name: Confirm .ko artifacts
+        run: |
+          ls -la kmod/*.ko
+          sudo insmod kmod/espnet_core.ko || true
+          ls -la /dev/espnet
+          sudo rmmod espnet_core || true
+
+  cross-aarch64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        kver: ["6.6", "6.8"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Fetch kernel source (headers for Kbuild)
+        run: |
+          sudo apt-get install -y wget flex bison libssl-dev
+          git clone --depth 1 --branch v${KVER} \
+            https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux-src
+        env:
+          KVER: ${{ matrix.kver }}
+      - name: Prepare kernel build tree
+        run: |
+          make -C linux-src ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            defconfig prepare modules_prepare -j$(nproc)
+      - name: Build espnet modules against target kernel
+        run: |
+          make -C kmod ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
+            KDIR=$PWD/linux-src
+          ls -la kmod/*.ko

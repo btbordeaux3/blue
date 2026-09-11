@@ -1,0 +1,47 @@
+/*
+ * blue-vbus.dts - Device tree overlay describing the USB-C power rail that
+ * powers the tethered ESP32 mobile unit.
+ *
+ * The mobile ESP32 is "on whenever the host is up and not sleeping", so the
+ * rail is modeled as a real kernel object (not just a cable): a node with an
+ * enable GPIO that the espnet_vbus platform driver binds to
+ * (compatible = "blue,esp32-vbus").
+ *
+ * OVERLAY vs KERNEL TREE
+ *   This file is dual-purpose:
+ *     - compiled standalone with dtc (make -C dt-overlay) for configfs
+ *       experimentation on any Linux box. To keep it self-contained the
+ *       enable GPIO phandle below is a placeholder literal.
+ *     - consumed by the meta-blue Yocto layer (recipes-kernel/linux/*.bbappend)
+ *       where it is compiled against the real BSP .dts, so there you write
+ *       the TRUE binding, e.g.
+ *           enable-gpios = <&gpio3 14 GPIO_ACTIVE_HIGH>;
+ *       (label + pin must point at your SoC's GPIO controller).
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "blue,handheld";
+
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            esp32_vbus {
+                compatible = "blue,esp32-vbus";
+                label      = "esp32-vbus";
+                /* no MMIO: this controller is GPIO-only */
+
+                /*
+                 * phandle placeholder 0x0 (see header comment). On the real
+                 * product the kernel build resolves a gpio controller label.
+                 * Cells: <&controller pin flags> with flags 1 = ACTIVE_HIGH.
+                 */
+                enable-gpios = <0x0 14 0x00000001>;
+
+                status = "okay";
+            };
+        };
+    };
+};
