@@ -87,6 +87,7 @@
 <div class="api-input">
   <input type="text" id="apiUrl" placeholder="Worker API URL" value="https://rf-map-api.housemapper.workers.dev">
   <button onclick="connect()">Connect</button>
+  <button onclick="clearData()" style="background:#ef4444; margin-left:10px;">Clear Data</button>
 </div>
 
 <div class="refresh-bar"><div class="fill" id="refreshFill" style="width:0%"></div></div>
@@ -138,20 +139,9 @@
 </div>
 
 <div class="card" style="margin-bottom:20px">
-  <h2>RF Neighbor Map &mdash; routers seen from the base &middot; distance rings (PA estimate)</h2>
-  <div id="houseMapWrap">
-    <canvas id="houseMap" width="800" height="520"></canvas>
-    <div id="houseTooltip"></div>
-  </div>
-  <div class="legend">
-    <span><span class="swatch" style="background:#3b82f6"></span>Base station</span>
-    <span><span class="swatch" style="background:#22c55e"></span>Strong (&ge; -60 dBm)</span>
-    <span><span class="swatch" style="background:#eab308"></span>Ok (-70 to -60)</span>
-    <span><span class="swatch" style="background:#f97316"></span>Weak (-80 to -70)</span>
-    <span><span class="swatch" style="background:#ef4444"></span>Very weak (&lt; -80)</span>
-    <span id="houseMapHint"></span>
-  </div>
-  <div class="label" id="houseMapNote">Each dot is a router/AP the base station's own scans can hear. Distance is a rough estimate from signal strength via a walled-indoor path-loss model (no GPS) &mdash; angle is derived from the AP identity so positions stay put between refreshes. Only stationary base observations are mapped.</div>
+  <h2>AP Distance List &mdash; routers seen from the base &middot; signal vs estimated distance</h2>
+  <div class="label" style="margin-bottom:10px">Each row represents a visible wireless access point sorted by estimated distance from the base station (log-distance indoor path-loss model).</div>
+  <div id="distanceListContainer" style="max-height:350px; overflow-y:auto; display:flex; flex-direction:column; gap:8px;"></div>
 </div>
 
 <div class="grid">
@@ -269,7 +259,25 @@ function connect() {
   pollTimer = setInterval(fetchData, 10000);
 }
 
-function log(msg) {
+async function clearData() {
+  if (!API_URL) {
+    alert('Please connect to the API URL first.');
+    return;
+  }
+  if (!confirm('Are you sure you want to clear all data on the website/worker?')) return;
+  try {
+    const res = await fetch(API_URL + '/api/reset', { method: 'POST' });
+    const json = await res.json();
+    if (json.ok) {
+      log('All data cleared successfully.');
+      fetchData();
+    } else {
+      alert('Failed to clear data.');
+    }
+  } catch (e) {
+    alert('Error clearing data: ' + e.message);
+  }
+}
   const el = document.getElementById('log');
   const d = document.createElement('div');
   d.textContent = new Date().toLocaleTimeString() + ' ' + msg;
@@ -319,7 +327,7 @@ async function fetchData() {
     renderRssiChart(map.entries || []);
     renderDistanceHeatmap(dist);
     renderCompactApHeatmap(map.entries || []);
-    renderHouseMap(map.entries || []);
+    renderDistanceList(map.entries || []);
     renderEvents(hist.entries || []);
     renderMetrics(metrics);
     renderTrends(mhist && mhist.entries ? mhist.entries : []);
@@ -537,160 +545,7 @@ function rssiToMeters(rssi) {
 }
 
 function renderHouseMap(entries) {
-  const canvas = document.getElementById('houseMap');
-  const tooltip = document.getElementById('houseTooltip');
-  const hint = document.getElementById('houseMapHint');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const cx = 400, cy = 250;
-
-  ctx.clearRect(0, 0, W, H);
-  ctx.font = '11px monospace';
-  hint.textContent = '';
-
-  // Aggregate by AP only: the same router seen at different hours is ONE dot.
-  // (Keying by AP+hour made one AP into many dots and reshuffled positions as
-  // the hour set changed, which made the map look like it "moved".)
-  // Only the STATIONARY base's observations are mapped: a moving mobile node
-  // measures the same routers at different RSSI, which would bounce dots
-  // around the rings and make the distances meaningless.
-  const MAX_METERS = 20; // match worker ring cap
-  const aps = new Map();
-  for (const e of entries) {
-    if (e.bssid_hash == null) continue;
-    if (e.device === 'mobile') continue;
-    const key = e.bssid_hash;
-    if (!aps.has(key)) {
-      aps.set(key, {
-        hash: e.bssid_hash,
-        rssi: e.rssi_avg != null ? e.rssi_avg : e.rssi,
-        rssi_min: e.rssi_min,
-        rssi_max: e.rssi_max,
-        samples: 0,
-      });
-    }
-    const ap = aps.get(key);
-    if (e.rssi_avg != null) ap.rssi = e.rssi_avg;
-    if (e.rssi_min != null && (ap.rssi_min == null || e.rssi_min < ap.rssi_min)) ap.rssi_min = e.rssi_min;
-    if (e.rssi_max != null && (ap.rssi_max == null || e.rssi_max > ap.rssi_max)) ap.rssi_max = e.rssi_max;
-    ap.samples += e.sample_count || 1;
-  }
-  const list = [...aps.values()].filter(a => a.rssi != null);
-  if (!list.length) {
-    ctx.fillStyle = '#6b7280';
-    ctx.textAlign = 'center';
-    ctx.fillText('No AP data yet. Waiting for base station...', cx, cy);
-    hint.textContent = 'No data yet';
-    return;
-  }
-
-  // Distance is derived from RSSI (log-distance path loss), never trusted from
-  // a stored ring that used the old model constants. Keeps every read on the
-  // current curve.
-  const metersOf = (a) => {
-    if (a.rssi == null) return 1;
-    return Math.max(1, Math.min(rssiToMeters(a.rssi), MAX_METERS));
-  };
-  const maxM = MAX_METERS;
-  const usable = Math.min(W * 0.30, H * 0.54);
-  const scale = usable / maxM;
-
-  // rings
-  const ringMeters = [1, 2, 5, 10, 15, MAX_METERS];
-  ctx.strokeStyle = 'rgba(59,130,246,0.18)';
-  ctx.fillStyle = '#6b7280';
-  ctx.textAlign = 'left';
-  ctx.lineWidth = 1;
-  for (const m of ringMeters) {
-    const r = m * scale;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.fillText(m + 'm', cx + r + 6, cy + 4);
-  }
-
-  // radius legend
-  hint.textContent = 'max estimated distance ' + maxM + 'm · ' + list.length + ' APs mapped';
-
-  // base station
-  ctx.beginPath();
-  ctx.arc(cx, cy, 7, 0, Math.PI * 2);
-  ctx.fillStyle = '#3b82f6';
-  ctx.fill();
-  ctx.strokeStyle = '#93c5fd';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.fillStyle = '#93c5fd';
-  ctx.textAlign = 'center';
-  ctx.fillText('BASE', cx, cy - 16);
-
-  // deterministic per-AP angle from its hash, so positions NEVER change as
-  // the AP set grows/shrinks (that reshuffle was the "it moved" bug). Golden
-  // angle keeps dots from piling up on one side.
-  const GOLDEN = Math.PI * (3 - Math.sqrt(5));
-  const angleOf = (h) => {
-    // fold the 32-bit hash into [0,1) with good mixing
-    const h1 = (h >>> 0) / 4294967296;
-    return h1 * Math.PI * 2 + GOLDEN;
-  };
-  const dots = [];
-  for (const ap of list) {
-    const angle = angleOf(ap.hash || 0);
-    // ring distance
-    const meters = metersOf(ap);
-    const r = Math.min(meters * scale, usable * 0.98);
-    const x = cx + Math.cos(angle) * r;
-    const y = cy + Math.sin(angle) * r;
-    const color = rssiColor(ap.rssi);
-    ctx.beginPath();
-    ctx.arc(x, y, 6, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.strokeStyle = ap.rssi < -75 ? '#fff' : 'rgba(0,0,0,0.5)';
-    ctx.lineWidth = ap.rssi < -75 ? 2 : 1;
-    ctx.stroke();
-    dots.push({ x, y, ap });
-    // hash label under dot (short form)
-    if (list.length <= 30) {
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '9px monospace';
-      ctx.fillText('0x' + (ap.hash || 0).toString(16).slice(-4), x, y + 16);
-    }
-  }
-
-  const move = (ev) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = W / rect.width;
-    const scaleY = H / rect.height;
-    const mx = (ev.clientX - rect.left) * scaleX;
-    const my = (ev.clientY - rect.top) * scaleY;
-    let hit = null, best = 14;
-    for (const d of dots) {
-      const dist = Math.hypot(d.x - mx, d.y - my);
-      if (dist < best) { best = dist; hit = d; }
-    }
-    if (hit) {
-      const t = new Date();
-      const meters = metersOf(hit.ap);
-      const rng = (hit.ap.rssi_min != null && hit.ap.rssi_max != null)
-        ? ' [' + hit.ap.rssi_min + '..' + hit.ap.rssi_max + ' dBm]'
-        : '';
-      tooltip.style.display = 'block';
-      tooltip.style.left = (ev.clientX - rect.left + 12) + 'px';
-      tooltip.style.top = (ev.clientY - rect.top + 12) + 'px';
-      tooltip.textContent =
-        'AP 0x' + (hit.ap.hash || 0).toString(16).slice(-8) +
-        ' · ~' + Math.round(meters) + 'm from base (est.)' +
-        ' · ' + Math.round(hit.ap.rssi) + ' dBm' +
-        rng +
-        ' · ' + (hit.ap.samples || 0) + ' sample(s)';
-    } else {
-      tooltip.style.display = 'none';
-    }
-  };
-  canvas.onmousemove = move;
-  canvas.onmouseleave = () => { tooltip.style.display = 'none'; };
+  renderDistanceList(entries);
 }
 
 function renderEvents(entries) {
