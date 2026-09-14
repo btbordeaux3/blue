@@ -259,6 +259,14 @@ function connect() {
   pollTimer = setInterval(fetchData, 10000);
 }
 
+function log(msg) {
+  const el = document.getElementById('log');
+  const d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+  el.prepend(d);
+  if (el.children.length > 50) el.lastChild.remove();
+}
+
 async function clearData() {
   if (!API_URL) {
     alert('Please connect to the API URL first.');
@@ -266,23 +274,17 @@ async function clearData() {
   }
   if (!confirm('Are you sure you want to clear all data on the website/worker?')) return;
   try {
-    const res = await fetch(API_URL + '/api/reset', { method: 'POST' });
+    const res = await fetch(API_URL + '/api/reset?key=blue-reset', { method: 'POST' });
     const json = await res.json();
     if (json.ok) {
       log('All data cleared successfully.');
       fetchData();
     } else {
-      alert('Failed to clear data.');
+      alert('Failed to clear data: ' + (json.error || 'unknown'));
     }
   } catch (e) {
     alert('Error clearing data: ' + e.message);
   }
-}
-  const el = document.getElementById('log');
-  const d = document.createElement('div');
-  d.textContent = new Date().toLocaleTimeString() + ' ' + msg;
-  el.prepend(d);
-  if (el.children.length > 50) el.lastChild.remove();
 }
 
 async function fetchData() {
@@ -542,6 +544,64 @@ function rssiToMeters(rssi) {
   // every router into a ~0.2m blob around the base station.
   if (rssi >= -40) return 1;
   return Math.round(Math.pow(10, (-40 - rssi) / (10 * 3.3)));
+}
+
+function renderDistanceList(entries) {
+  const container = document.getElementById('distanceListContainer');
+  container.innerHTML = '';
+  if (!entries || !entries.length) {
+    container.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center">No data yet. Waiting for the base station to scan...</div>';
+    return;
+  }
+
+  // Group by bssid_hash, compute avg RSSI and distance
+  const byBssid = {};
+  for (const e of entries) {
+    const h = e.bssid_hash;
+    if (!byBssid[h]) {
+      byBssid[h] = { bssid_hash: h, rssi_sum: 0, rssi_count: 0, ring_sum: 0, ring_count: 0, is_weak: false, hours: new Set() };
+    }
+    byBssid[h].rssi_sum += e.rssi_avg || e.rssi || -80;
+    byBssid[h].rssi_count++;
+    if (e.ring_avg != null) { byBssid[h].ring_sum += e.ring_avg; byBssid[h].ring_count++; }
+    if (e.is_weak) byBssid[h].is_weak = true;
+    if (e.hour != null) byBssid[h].hours.add(e.hour);
+  }
+
+  const rows = Object.values(byBssid).map(v => {
+    const rssiAvg = Math.round(v.rssi_sum / v.rssi_count);
+    const dist = rssiToMeters(rssiAvg);
+    return { bssid_hash: v.bssid_hash, rssi_avg: rssiAvg, distance: dist, is_weak: v.is_weak, hours: Array.from(v.hours).sort((a,b)=>a-b) };
+  });
+
+  // Sort by distance (closest first)
+  rows.sort((a, b) => a.distance - b.distance);
+
+  // Show top 20
+  rows.slice(0, 20).forEach(r => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#0a0e17;border-radius:6px;border:1px solid var(--border);margin-bottom:4px';
+    const distColor = r.distance <= 5 ? 'var(--green)' : r.distance <= 12 ? 'var(--yellow)' : 'var(--red)';
+    row.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;flex:1">
+        <span style="font-size:0.75rem;color:var(--dim)">0x${r.bssid_hash.toString(16).slice(-8)}</span>
+        <span class="${r.is_weak ? 'weak' : 'good'}" style="font-weight:bold;font-size:0.85rem">${r.rssi_avg} dBm</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:60px;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+          <div style="height:100%;width:${Math.min(100, r.distance * 5)}%;background:${distColor}"></div>
+        </div>
+        <span style="font-size:0.75rem;color:${distColor};min-width:32px;text-align:right">${r.distance}m</span>
+      </div>`;
+    container.appendChild(row);
+  });
+
+  if (rows.length > 20) {
+    const more = document.createElement('div');
+    more.style.cssText = 'color:var(--dim);font-size:0.7rem;text-align:center;padding:4px';
+    more.textContent = `+ ${rows.length - 20} more APs`;
+    container.appendChild(more);
+  }
 }
 
 function renderHouseMap(entries) {

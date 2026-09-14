@@ -179,7 +179,7 @@ void repeater_task_activate(void) {
                       router_ssid, WiFi.localIP().toString().c_str());
         bridge_active = true;
         bridge_started_at = millis();
-        digitalWrite(REPEATER_LED_PIN, HIGH);
+        digitalWrite(REPEATER_LED_PIN, LOW);
         if (!WiFi.AP.enableNAPT(true)) {
             Serial.println("[REPEATER] NAPT enable FAILED - clients will have no internet");
         }

@@ -101,6 +101,14 @@ static void enter_sleep_state(void) {
 
     Serial.println("[PM] Woke from sleep");
 
+    if (WiFi.status() != WL_CONNECTED) {
+        char nssid[33];
+        char npsk[65];
+        repeater_task_get_credentials(nssid, sizeof(nssid), npsk, sizeof(npsk));
+        Serial.printf("[PM] Reconnecting to WiFi '%s'...\n", nssid);
+        WiFi.begin(nssid, npsk);
+    }
+
     uint32_t connect_start = millis();
     int wait = 0;
     while (WiFi.status() != WL_CONNECTED && wait < 50) {
