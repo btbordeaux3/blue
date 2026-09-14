@@ -5,11 +5,15 @@ const corsHeaders = {
 };
 
 /* RSSI -> distance (meters) via indoor path-loss at 2.4GHz.
- * Reference: -30 dBm at 1 m, path-loss exponent ~2.8 (walls/furniture). */
+ * Reference: -40 dBm at 1 m, path-loss exponent 3.3 (walled-indoor).
+ * Sanity: -55 ~ 3m, -65 ~ 6m, -75 ~ 12m, -85 ~ 2x the cap. The old
+ * constants (-30@1m, n=2.8) estimated sub-meter distances for most real
+ * readings, dumping every AP into a blob at the base station. */
+const RSSI_REF_DBM = -40;
+const PATH_LOSS_N = 3.3;
 function rssiToMeters(rssi) {
-  const n = 2.8;
-  if (rssi >= -30) return 0.5;
-  return Math.round(Math.pow(10, (-30 - rssi) / (10 * n)));
+  if (rssi >= RSSI_REF_DBM) return 1;
+  return Math.round(Math.pow(10, (RSSI_REF_DBM - rssi) / (10 * PATH_LOSS_N)));
 }
 function ringFromRssi(rssi) {
   const m = rssiToMeters(rssi);
@@ -17,11 +21,18 @@ function ringFromRssi(rssi) {
 }
 
 /* Normalize a single fingerprint entry, accepting both the compact
- * firmware keys and the legacy full keys. */
+ * firmware keys and the legacy full keys. `v` tags the observer: 0 = the
+ * stationary base scan (map source of truth), 1 = a mobile/handheld node. */
+const DEVICE_BASE = 'base';
+const DEVICE_MOBILE = 'mobile';
 function normalizeEntry(d, now, deviceDefault) {
   const rssi = (d.r == null) ? d.rssi : d.r;
   const hour = (d.hr == null) ? d.hour : d.hr;
   const day = (d.d == null) ? d.day : d.d;
+  let device = deviceDefault;
+  if (d.v === 1) device = DEVICE_MOBILE;
+  else if (d.v === 0) device = DEVICE_BASE;
+  else if (d.device) device = d.device;
   return {
     timestamp: d.timestamp || now,
     bssid_hash: d.h || d.bssid_hash,
@@ -30,7 +41,7 @@ function normalizeEntry(d, now, deviceDefault) {
     rssi: rssi,
     is_weak: rssi < -75,
     ring: (d.ring == null) ? ringFromRssi(rssi) : d.ring,
-    device: d.device || deviceDefault,
+    device,
   };
 }
 
@@ -164,15 +175,30 @@ async function handleGetHistory(url, env) {
 async function handleMetrics(request, env) {
   const data = await request.json();
   const now = Date.now();
-  const snapshot = { ...data, received_at: now };
 
-  /* Single-write history (latest metric == last history item), so a
-   * 10-minute firmware cadence stays far inside the KV free tier. */
+  /* Compute per-minute activity rates against the previous snapshot, so the
+   * dashboard can show "events/min" and "scans/min" without a second store
+   * and without waiting for the next poll cycle. */
   let history = [];
   const histData = await env.RF_MAP.get('metrics_history');
   if (histData) {
     try { history = JSON.parse(histData); } catch (e) { history = []; }
   }
+  const prev = history.length ? history[history.length - 1] : null;
+  let rate = null;
+  if (prev && prev.received_at) {
+    const minutes = Math.max((now - prev.received_at) / 60000, 0.5);
+    rate = {
+      events_per_min: Math.round(((data.events?.logged || 0) - (prev.events?.logged || 0)) / minutes),
+      scans_per_min: Math.round(((data.scan?.count || 0) - (prev.scan?.count || 0)) / minutes),
+      espnow_tx_per_min: Math.round(((data.espnow?.tx || 0) - (prev.espnow?.tx || 0)) / minutes),
+    };
+  }
+
+  const snapshot = { ...data, device: data.device || DEVICE_BASE, received_at: now, rate };
+
+  /* Single-write history (latest metric == last history item), so a
+   * 10-minute firmware cadence stays far inside the KV free tier. */
   history.push(snapshot);
   if (history.length > 200) {
     history = history.slice(-200);
@@ -216,11 +242,63 @@ async function handleReset(request, env) {
     env.RF_MAP.delete('decision'),
     env.RF_MAP.delete('metrics'),
     env.RF_MAP.delete('metrics_history'),
+    env.RF_MAP.delete('improvement'),
   ]);
 
   return new Response(JSON.stringify({ ok: true, reset: true }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+}
+
+/* Repeater-improvement samples, posted by the host esp-wifi-agent while it is
+ * attached to the extender. Each sample is
+ *   improvement_dbm = signal_to_extender - signal_to_router_direct
+ * so a positive value means the extender is helping. The worker only appends
+ * (one KV read + write per POST) and computes the stats on read, keeping us
+ * inside the free-tier KV budget. */
+async function handleImprovement(request, env) {
+  const data = await request.json();
+  const now = Date.now();
+  const sample = {
+    improvement_dbm: Math.round(data.improvement_dbm || 0),
+    ext_dbm: data.ext_dbm != null ? Math.round(data.ext_dbm) : null,
+    direct_dbm: data.direct_dbm != null ? Math.round(data.direct_dbm) : null,
+    ts: now,
+  };
+
+  let hist = [];
+  const existing = await env.RF_MAP.get('improvement');
+  if (existing) {
+    try { hist = JSON.parse(existing); } catch (e) { hist = []; }
+  }
+  hist.push(sample);
+  if (hist.length > 5000) hist = hist.slice(-5000);
+  await env.RF_MAP.put('improvement', JSON.stringify(hist));
+
+  return new Response(JSON.stringify({ ok: true, count: hist.length }), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
+async function handleGetImprovement(env) {
+  const data = await env.RF_MAP.get('improvement');
+  const hist = data ? JSON.parse(data) : [];
+  if (!hist.length) {
+    return new Response(JSON.stringify({
+      count: 0,
+      avg_improvement_dbm: null,
+      entries: [],
+    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  }
+  const avg = Math.round(
+    hist.reduce((a, s) => a + s.improvement_dbm, 0) / hist.length);
+  const recent = hist.slice(-20).reverse();
+  return new Response(JSON.stringify({
+    count: hist.length,
+    avg_improvement_dbm: avg,
+    total_improvement_dbm: hist.reduce((a, s) => a + s.improvement_dbm, 0),
+    entries: recent,
+  }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 }
 
 export default {
@@ -258,6 +336,12 @@ export default {
       }
       if (url.pathname === '/api/metrics/history' && request.method === 'GET') {
         return await handleGetMetricsHistory(env);
+      }
+      if (url.pathname === '/api/improvement' && request.method === 'POST') {
+        return await handleImprovement(request, env);
+      }
+      if (url.pathname === '/api/improvement' && request.method === 'GET') {
+        return await handleGetImprovement(env);
       }
     } catch (e) {
       console.error(`[rf-map-api] error on ${request.method} ${url.pathname}: ${e.stack || e.message}`);

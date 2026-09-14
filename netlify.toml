@@ -1,0 +1,9 @@
+[build]
+  command = ""
+  publish = "deploy/site"
+
+[build.environment]
+  CI = "true"
+
+[context.production]
+  publish = "deploy/site"

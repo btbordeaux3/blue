@@ -35,9 +35,9 @@
   .status-dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .status-dot.off { background: var(--red); }
   .heatmap-container { overflow-x: auto; }
-  .heatmap { display: grid; gap: 2px; margin-top: 8px; }
-  .heatmap-cell { width: 100%; aspect-ratio: 1; border-radius: 2px; min-width: 20px; }
-  .heatmap-label { font-size: 0.65rem; color: var(--dim); text-align: center; padding: 2px; }
+  .heatmap { display: grid; gap: 1px; margin-top: 6px; }
+  .heatmap-cell { width: 100%; aspect-ratio: 1; border-radius: 2px; min-width: 11px; }
+  .heatmap-label { font-size: 0.55rem; color: var(--dim); text-align: center; padding: 2px; }
   .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 12px; }
   .bar { flex: 1; border-radius: 2px 2px 0 0; min-width: 8px; transition: height 0.3s; position: relative; }
   .bar:hover { opacity: 0.8; }
@@ -61,6 +61,8 @@
   .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 0.7rem; color: var(--dim); margin-top: 8px; }
   .legend span { display: flex; align-items: center; gap: 5px; }
   .legend .swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  #trendChart { width: 100%; height: 220px; display: block; background: #0a1122; border-radius: 6px; }
+  .trend-wrap { overflow-x: auto; }
 </style>
 </head>
 <body>
@@ -105,6 +107,11 @@
     <div class="label" id="repeaterSource">waiting for data</div>
   </div>
   <div class="card">
+    <h2>Repeater Improvement</h2>
+    <div class="stat green" id="improvementAvg">--</div>
+    <div class="label" id="improvementDetail">no samples yet</div>
+  </div>
+  <div class="card">
     <h2>ML Model</h2>
     <div class="stat green" id="mlStatus">--</div>
     <div class="label" id="mlDetail">no model data yet</div>
@@ -112,7 +119,7 @@
 </div>
 
 <div class="card" style="margin-bottom:20px">
-  <h2>House Coverage Map &mdash; Distance Rings from Base</h2>
+  <h2>RF Neighbor Map &mdash; routers seen from the base &middot; distance rings (PA estimate)</h2>
   <div id="houseMapWrap">
     <canvas id="houseMap" width="800" height="520"></canvas>
     <div id="houseTooltip"></div>
@@ -125,7 +132,7 @@
     <span><span class="swatch" style="background:#ef4444"></span>Very weak (&lt; -80)</span>
     <span id="houseMapHint"></span>
   </div>
-  <div class="label">Distance is estimated from signal strength (path-loss model). Walk around with a phone and the rings fill in automatically &mdash; each dot is a router/AP seen at that distance.</div>
+  <div class="label" id="houseMapNote">Each dot is a router/AP the base station's own scans can hear. Distance is a rough estimate from signal strength via a walled-indoor path-loss model (no GPS) &mdash; angle is derived from the AP identity so positions stay put between refreshes. Only stationary base observations are mapped.</div>
 </div>
 
 <div class="grid">
@@ -161,12 +168,12 @@
 
 <div style="margin-top:32px; padding-top:20px; border-top:1px solid var(--border)">
   <h2 style="font-size:1.1rem; margin-bottom:4px"><span class="status-dot" id="metricsDot"></span>Device Metrics</h2>
-  <div class="subtitle">Real-time system health from ESP32 devices</div>
+  <div class="subtitle">Real-time system health &mdash; <span id="metricsDevice">--</span> &mdash; updated <span id="metricsAge">--</span></div>
 </div>
 
 <div class="grid" id="metricsGrid" style="margin-top:16px">
   <div class="card">
-    <h2>WiFi Uptime</h2>
+    <h2>WiFi Uplink</h2>
     <div class="stat green" id="wifiUptime">--</div>
     <div class="label" id="wifiDetail">--</div>
   </div>
@@ -181,6 +188,10 @@
     <div class="label" id="heapDetail">--</div>
   </div>
   <div class="card">
+    <h2>Task Stacks (free)</h2>
+    <div id="stackBars" style="margin-top:4px">--</div>
+  </div>
+  <div class="card">
     <h2>Scan Performance</h2>
     <div class="stat blue" id="scanPerf">--</div>
     <div class="label" id="scanDetail">--</div>
@@ -191,29 +202,33 @@
     <div class="label" id="rssiDetail">--</div>
   </div>
   <div class="card">
-    <h2>Power & Sleep</h2>
-    <div class="stat" id="sleepStats">--</div>
-    <div class="label" id="sleepDetail">--</div>
+    <h2>Uptime</h2>
+    <div class="stat" id="uptimeVal" style="font-size:1.5rem">--</div>
+    <div class="label" id="uptimeDetail">--</div>
   </div>
   <div class="card">
-    <h2>Activation Latency</h2>
-    <div class="stat" id="latencyAvg">--</div>
-    <div class="label" id="latencyDetail">--</div>
-  </div>
-  <div class="card">
-    <h2>Deadline Compliance</h2>
-    <div class="stat" id="deadlinePct">--</div>
-    <div class="label" id="deadlineDetail">--</div>
-  </div>
-  <div class="card">
-    <h2>Repeater Activity</h2>
-    <div class="stat" id="repeaterStats">--</div>
-    <div class="label" id="repeaterDetail">--</div>
-  </div>
-  <div class="card">
-    <h2>Event Log</h2>
+    <h2>Event Ring</h2>
     <div class="stat" id="eventCount">--</div>
     <div class="label" id="eventDetail">--</div>
+  </div>
+</div>
+
+<div class="label" style="margin:4px 2px 14px 2px; max-width:760px">
+  Sleep, activation latency, deadline compliance and repeater activity are
+  <em>mobile-node</em> behaviors &mdash; the base station neither sleeps nor
+  self-triggers the extender, so those counters stay 0 / n/a here and are
+  reported from the mobile unit when it is active.
+</div>
+
+<div class="card">
+  <h2>Metrics Trends &mdash; last 200 snapshots</h2>
+  <div class="trend-wrap"><canvas id="trendChart" width="900" height="220"></canvas></div>
+  <div class="legend">
+    <span><span class="swatch" style="background:#3b82f6"></span>Heap (KB)</span>
+    <span><span class="swatch" style="background:#22c55e"></span>RSSI (dBm)</span>
+    <span><span class="swatch" style="background:#eab308"></span>Scan (ms)</span>
+    <span><span class="swatch" style="background:#f97316"></span>Uplink %</span>
+    <span id="trendHint"></span>
   </div>
 </div>
 
@@ -242,16 +257,20 @@ function log(msg) {
 async function fetchData() {
   if (!API_URL) return;
   try {
-    const [mapRes, statusRes, histRes, metricsRes] = await Promise.all([
+    const [mapRes, statusRes, histRes, metricsRes, mhistRes, improvRes] = await Promise.all([
       fetch(API_URL + '/api/map'),
       fetch(API_URL + '/api/status'),
       fetch(API_URL + '/api/history?limit=50'),
       fetch(API_URL + '/api/metrics').catch(() => ({ json: () => null })),
+      fetch(API_URL + '/api/metrics/history').catch(() => ({ json: () => null })),
+      fetch(API_URL + '/api/improvement').catch(() => ({ json: () => null })),
     ]);
     const map = await mapRes.json();
     const status = await statusRes.json();
     const hist = await histRes.json();
     const metrics = await metricsRes.json().catch(() => null);
+    const mhist = await mhistRes.json().catch(() => null);
+    const improv = await improvRes.json().catch(() => null);
 
     document.getElementById('statusDot').className = 'status-dot on';
 
@@ -277,7 +296,9 @@ async function fetchData() {
     renderHouseMap(map.entries || []);
     renderEvents(hist.entries || []);
     renderMetrics(metrics);
+    renderTrends(mhist && mhist.entries ? mhist.entries : []);
     renderDecision(status.decision);
+    renderImprovement(improv);
 
     animateRefreshBar();
   } catch (e) {
@@ -405,10 +426,11 @@ function renderHeatmap(entries) {
 }
 
 function rssiToMeters(rssi) {
-  // mirror of worker: indoor path-loss, -30 dBm @ 1m, exponent 2.8
-  if (rssi >= -30) return 0.5;
-  const n = 2.8;
-  return Math.round(Math.pow(10, (-30 - rssi) / (10 * n)));
+  // mirror of worker: indoor path-loss, -40 dBm @ 1m, exponent 3.3.
+  // (-55 ~ 3m, -65 ~ 6m, -75 ~ 12m). The old -30@1m/n2.8 model shoved
+  // every router into a ~0.2m blob around the base station.
+  if (rssi >= -40) return 1;
+  return Math.round(Math.pow(10, (-40 - rssi) / (10 * 3.3)));
 }
 
 function renderHouseMap(entries) {
@@ -427,23 +449,29 @@ function renderHouseMap(entries) {
   // Aggregate by AP only: the same router seen at different hours is ONE dot.
   // (Keying by AP+hour made one AP into many dots and reshuffled positions as
   // the hour set changed, which made the map look like it "moved".)
+  // Only the STATIONARY base's observations are mapped: a moving mobile node
+  // measures the same routers at different RSSI, which would bounce dots
+  // around the rings and make the distances meaningless.
   const MAX_METERS = 20; // match worker ring cap
   const aps = new Map();
   for (const e of entries) {
     if (e.bssid_hash == null) continue;
+    if (e.device === 'mobile') continue;
     const key = e.bssid_hash;
     if (!aps.has(key)) {
       aps.set(key, {
         hash: e.bssid_hash,
         rssi: e.rssi_avg != null ? e.rssi_avg : e.rssi,
-        ring: e.ring_avg != null ? e.ring_avg : e.ring,
+        rssi_min: e.rssi_min,
+        rssi_max: e.rssi_max,
         samples: 0,
       });
     }
     const ap = aps.get(key);
-    if (e.ring_avg != null) ap.ring = e.ring_avg;
     if (e.rssi_avg != null) ap.rssi = e.rssi_avg;
-    ap.samples++;
+    if (e.rssi_min != null && (ap.rssi_min == null || e.rssi_min < ap.rssi_min)) ap.rssi_min = e.rssi_min;
+    if (e.rssi_max != null && (ap.rssi_max == null || e.rssi_max > ap.rssi_max)) ap.rssi_max = e.rssi_max;
+    ap.samples += e.sample_count || 1;
   }
   const list = [...aps.values()].filter(a => a.rssi != null);
   if (!list.length) {
@@ -454,11 +482,12 @@ function renderHouseMap(entries) {
     return;
   }
 
-  // Clamp ring estimates to the 20m cap so a stray old 56m reading cannot
-  // compress the whole map or nudge the ring circles every refresh.
+  // Distance is derived from RSSI (log-distance path loss), never trusted from
+  // a stored ring that used the old model constants. Keeps every read on the
+  // current curve.
   const metersOf = (a) => {
-    const raw = a.ring != null ? a.ring : rssiToMeters(a.rssi);
-    return Math.max(0.5, Math.min(raw, MAX_METERS));
+    if (a.rssi == null) return 1;
+    return Math.max(1, Math.min(rssiToMeters(a.rssi), MAX_METERS));
   };
   const maxM = MAX_METERS;
   const usable = Math.min(W * 0.30, H * 0.54);
@@ -541,14 +570,18 @@ function renderHouseMap(entries) {
     if (hit) {
       const t = new Date();
       const meters = metersOf(hit.ap);
+      const rng = (hit.ap.rssi_min != null && hit.ap.rssi_max != null)
+        ? ' [' + hit.ap.rssi_min + '..' + hit.ap.rssi_max + ' dBm]'
+        : '';
       tooltip.style.display = 'block';
       tooltip.style.left = (ev.clientX - rect.left + 12) + 'px';
       tooltip.style.top = (ev.clientY - rect.top + 12) + 'px';
       tooltip.textContent =
         'AP 0x' + (hit.ap.hash || 0).toString(16).slice(-8) +
-        ' · ~' + Math.round(meters) + 'm from base' +
+        ' · ~' + Math.round(meters) + 'm from base (est.)' +
         ' · ' + Math.round(hit.ap.rssi) + ' dBm' +
-        ' · ' + hit.ap.samples + ' sample(s)';
+        rng +
+        ' · ' + (hit.ap.samples || 0) + ' sample(s)';
     } else {
       tooltip.style.display = 'none';
     }
@@ -568,6 +601,22 @@ function renderEvents(entries) {
     tr.innerHTML = `<td>${t.toLocaleTimeString()}</td><td>0x${(e.bssid_hash || 0).toString(16).slice(-8)}</td><td class="${rssi < -75 ? 'weak' : 'good'}">${Math.round(rssi)} dBm</td><td>${e.hour != null ? e.hour + ':00' : '--'}</td><td>${e.is_weak ? '<span class="weak">WEAK</span>' : '<span class="good">OK</span>'}</td>`;
     tbody.appendChild(tr);
   }
+}
+
+function renderImprovement(improv) {
+  const avgEl = document.getElementById('improvementAvg');
+  const detEl = document.getElementById('improvementDetail');
+  if (!improv || !improv.count) {
+    avgEl.textContent = '--';
+    avgEl.className = 'stat';
+    detEl.textContent = 'no samples yet';
+    return;
+  }
+  const avg = improv.avg_improvement_dbm;
+  const txt = avg >= 0 ? ('+' + avg + ' dBm') : (avg + ' dBm');
+  avgEl.textContent = txt;
+  avgEl.className = 'stat ' + (avg > 0 ? 'green' : avg < 0 ? 'red' : 'yellow');
+  detEl.textContent = improv.count + ' sample(s) · signal on extender vs direct router';
 }
 
 function renderDecision(d) {
@@ -620,64 +669,217 @@ function animateRefreshBar() {
   });
 }
 
+function fmtDuration(ms) {
+  if (!ms) return '--';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+  const d = Math.floor(s / 86400);
+  return d + 'd ' + Math.floor((s % 86400) / 3600) + 'h';
+}
+
+function renderStackBars(stk) {
+  const el = document.getElementById('stackBars');
+  if (!stk) { el.textContent = '--'; return; }
+  const rows = [
+    ['PM', stk.pm], ['scan', stk.scan], ['report', stk.report], ['repeater', stk.repeater],
+  ].filter(([, v]) => v != null && v > 0);
+  if (!rows.length) { el.textContent = 'no task data'; return; }
+  // Max configured stack for each task (bytes), used as the bar ceiling.
+  const caps = { pm: 8192, scan: 8192, report: 4096, repeater: 8192 };
+  el.innerHTML = rows.map(([name, v]) => {
+    const cap = caps[name] || 8192;
+    const pct = Math.max(0, Math.min(100, (v / cap) * 100));
+    const warn = v < 512 ? 'red' : v < 1024 ? 'yellow' : 'green';
+    return '<div style="margin-bottom:8px">' +
+      '<div style="display:flex;justify-content:space-between;margin-bottom:2px">' +
+      '<span style="font-size:0.7rem;color:var(--dim)">' + name + '</span>' +
+      '<span style="font-size:0.7rem;color:var(--' + warn + ')">' + v + ' B free</span>' +
+      '</div>' +
+      '<div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">' +
+      '<div style="height:100%;width:' + pct + '%;background:var(--' + warn + ');border-radius:3px"></div>' +
+      '</div></div>';
+  }).join('') +
+  '<div style="font-size:0.7rem;color:var(--dim);margin-top:4px">FreeRTOS high-water marks (0 = task never ran)</div>';
+}
+
 function renderMetrics(m) {
   if (!m || m.error) {
     document.getElementById('metricsDot').className = 'status-dot off';
-    document.getElementById('wifiUptime').textContent = 'No data';
+    document.getElementById('metricsDevice').textContent = 'no metrics yet';
+    document.getElementById('metricsAge').textContent = '--';
+    document.getElementById('wifiUptime').textContent = '--';
+    renderStackBars(null);
     return;
   }
-  document.getElementById('metricsDot').className = 'status-dot on';
+  const age = m.received_at ? (Date.now() - m.received_at) / 1000 : null;
+  const stale = age != null && age > 15 * 60;
+  document.getElementById('metricsDot').className = stale ? 'status-dot off' : 'status-dot on';
+  document.getElementById('metricsDevice').textContent =
+    'base node (ESP32-S3)' + (m.device && m.device !== 'base' ? ' · ' + m.device : '');
+  document.getElementById('metricsAge').textContent = age != null
+    ? (age < 60 ? Math.round(age) + 's ago' : fmtDuration(age * 1000) + ' ago')
+    : '--';
 
+  const turn = (id, txt, color, size) => {
+    const el = document.getElementById(id);
+    el.textContent = txt;
+    el.className = 'stat' + (color ? ' ' + color : '') + (size ? ' ' + size : '');
+  };
+
+  /* WiFi uplink */
   const w = m.wifi || {};
-  const uptime = w.uptime_pct != null ? w.uptime_pct.toFixed(1) + '%' : '--';
-  document.getElementById('wifiUptime').textContent = uptime;
-  document.getElementById('wifiUptime').className = 'stat ' + (w.uptime_pct > 80 ? 'green' : w.uptime_pct > 50 ? 'yellow' : 'red');
-  document.getElementById('wifiDetail').textContent = (w.connects || 0) + ' connects, ' + (w.connect_ms_avg || 0).toFixed(0) + 'ms avg';
+  const up = w.uptime_pct;
+  const upVal = up != null ? up.toFixed(1) + '%' : '--';
+  turn('wifiUptime', upVal,
+    up > 99 ? 'green' : up > 95 ? 'yellow' : 'red');
+  document.getElementById('wifiDetail').textContent =
+    (w.connects || 0) + ' connects, ' + (w.connect_ms_avg || 0).toFixed(0) + 'ms avg connect' +
+    (w.connected_ms ? ' · ' + fmtDuration(w.connected_ms) + ' up' : '');
 
+  /* ESPNOW link */
   const e = m.espnow || {};
-  document.getElementById('espnowTx').textContent = (e.tx || 0) + ' TX';
-  document.getElementById('espnowDetail').textContent = (e.tx_fail || 0) + ' fail, ' + (e.rx || 0) + ' RX, ' + (e.tx_us_avg || 0).toFixed(0) + 'us avg';
+  const linkAlive = e.last_rx_ms_ago != null && e.last_rx_ms_ago >= 0 &&
+    (e.rx || 0) > 0 && e.last_rx_ms_ago < 60000;
+  turn('espnowTx', (e.tx || 0) + ' TX', e.tx_fail === 0 ? 'blue' : 'yellow');
+  const linkTxt = linkAlive ? 'link alive · ' + (e.last_rx_ms_ago / 1000).toFixed(1) + 's ago'
+    : (e.rx || 0) > 0 ? 'no frames in ' + fmtDuration(e.last_rx_ms_ago * 1000)
+    : 'no link yet';
+  document.getElementById('espnowDetail').textContent =
+    (e.tx_fail || 0) + ' fail · ' + (e.rx || 0) + ' RX · ' +
+    ((e.tx_us_avg || 0) > 0 ? Math.round(e.tx_us_avg) + 'µs avg TX' : '--') + ' · ' + linkTxt;
 
+  /* Heap */
   const hp = m.health || {};
-  const heapPct = hp.heap_free ? Math.round(hp.heap_free / 1024) : 0;
-  document.getElementById('heapFree').textContent = heapPct + ' KB';
-  document.getElementById('heapFree').className = 'stat ' + (hp.heap_free > 40000 ? 'green' : hp.heap_free > 20000 ? 'yellow' : 'red');
-  document.getElementById('heapDetail').textContent = 'min ' + (hp.heap_min ? Math.round(hp.heap_min / 1024) : '--') + ' KB, PM stack ' + (hp.pm_stack || '--') + 'B';
+  const heapKB = hp.heap_free ? Math.round(hp.heap_free / 1024) : 0;
+  turn('heapFree', heapKB + ' KB',
+    hp.heap_free > 40000 ? 'green' : hp.heap_free > 20000 ? 'yellow' : 'red');
+  document.getElementById('heapDetail').textContent =
+    'min ' + (hp.heap_min ? Math.round(hp.heap_min / 1024) + ' KB' : '--') +
+    ' · warns below 8 KB (ev HEAP_LOW)';
 
+  /* Task stacks */
+  renderStackBars(m.stack || { pm: hp.pm_stack });
+
+  /* Scan performance */
   const sc = m.scan || {};
-  document.getElementById('scanPerf').textContent = (sc.count || 0) + ' scans';
-  document.getElementById('scanDetail').textContent = 'avg ' + (sc.time_ms_avg || 0).toFixed(0) + 'ms, worst ' + (sc.time_ms_worst || 0).toFixed(0) + 'ms, ' + (sc.ap_count_avg || 0).toFixed(0) + ' APs';
+  turn('scanPerf', (sc.count || 0) + ' scans', sc.count ? 'blue' : '');
+  document.getElementById('scanDetail').textContent =
+    'avg ' + (sc.time_ms_avg || 0).toFixed(0) + 'ms · worst ' + (sc.time_ms_worst || 0).toFixed(0) +
+    'ms · ~' + (sc.ap_count_avg || 0).toFixed(0) + ' APs' +
+    (m.rate && m.rate.scans_per_min ? ' · ' + m.rate.scans_per_min + '/min' : '');
 
+  /* RSSI */
   const r = m.rssi || {};
-  const rssiVal = r.mean != null ? r.mean.toFixed(1) : '--';
-  document.getElementById('rssiAvg').textContent = rssiVal + ' dBm';
-  document.getElementById('rssiAvg').className = 'stat ' + (r.mean > -60 ? 'green' : r.mean > -75 ? 'yellow' : 'red');
-  document.getElementById('rssiDetail').textContent = 'stddev ' + (r.stddev || 0).toFixed(1) + ', range [' + (r.min || '--') + ', ' + (r.max || '--') + ']';
+  const hasRssi = r.mean != null && r.stddev !== undefined;
+  if (hasRssi) {
+    turn('rssiAvg', r.mean.toFixed(1) + ' dBm',
+      r.mean > -60 ? 'green' : r.mean > -75 ? 'yellow' : 'red');
+    document.getElementById('rssiDetail').textContent =
+      'stddev ' + r.stddev.toFixed(1) + ' · range [' +
+      (r.min != null ? r.min : '--') + ', ' + (r.max != null ? r.max : '--') + ']';
+  } else {
+    turn('rssiAvg', '--');
+    document.getElementById('rssiDetail').textContent = 'no signal samples yet';
+  }
 
-  const pw = m.power || {};
-  document.getElementById('sleepStats').textContent = (pw.sleeps || 0) + ' sleeps';
-  document.getElementById('sleepDetail').textContent = (pw.sleep_ms || 0) + 'ms total';
+  /* Uptime (device) */
+  const upS = m.uptime_ms ? m.uptime_ms / 1000 : 0;
+  document.getElementById('uptimeVal').textContent = upS ? fmtDuration(upS * 1000) : '--';
+  document.getElementById('uptimeDetail').textContent =
+    'since boot (' + (upS ? Math.round(upS / 3600) : 0) + 'h)' +
+    (m.rate && m.rate.events_per_min != null ? ' · ~' + m.rate.events_per_min + ' events/min' : '');
 
-  const lt = m.latency || {};
-  const ltAvg = lt.activation_ms_avg != null ? lt.activation_ms_avg.toFixed(0) : '--';
-  document.getElementById('latencyAvg').textContent = ltAvg + ' ms';
-  document.getElementById('latencyAvg').className = 'stat ' + (lt.activation_ms_avg < 3000 ? 'green' : lt.activation_ms_avg < 5000 ? 'yellow' : 'red');
-  document.getElementById('latencyDetail').textContent = 'worst ' + (lt.activation_ms_worst || '--') + 'ms, deadline ' + (lt.deadline_ms || 5000) + 'ms';
-
-  const met = lt.deadline_met || 0;
-  const missed = lt.deadline_missed || 0;
-  const total = met + missed;
-  const dlPct = total > 0 ? Math.round((met / total) * 100) : '--';
-  document.getElementById('deadlinePct').textContent = dlPct + '%';
-  document.getElementById('deadlinePct').className = 'stat ' + (dlPct > 90 ? 'green' : dlPct > 70 ? 'yellow' : 'red');
-  document.getElementById('deadlineDetail').textContent = met + ' met, ' + missed + ' missed of ' + total;
-
-  document.getElementById('repeaterStats').textContent = (pw.repeater_activations || 0) + ' activations';
-  document.getElementById('repeaterDetail').textContent = (pw.repeater_ms || 0) + 'ms active';
-
+  /* Event ring: 64-slot lock-free ring. "overwritten" = events that wrapped
+   * out of the ring before the next metrics read — normal for a bounded
+   * buffer that stores only the newest events. */
   const ev = m.events || {};
-  document.getElementById('eventCount').textContent = (ev.logged || 0) + ' events';
-  document.getElementById('eventDetail').textContent = (ev.dropped || 0) + ' dropped';
+  document.getElementById('eventCount').textContent =
+    (ev.logged || 0) + ' total';
+  document.getElementById('eventDetail').textContent =
+    '64-slot ring · ' + (ev.dropped || 0) + ' overwritten (wraps)' +
+    (m.rate && m.rate.events_per_min != null
+      ? ' · ~' + m.rate.events_per_min + ' ev/min · ~' + Math.max(1, Math.round(64 / Math.max(1, m.rate.events_per_min))) + ' min kept'
+      : ' · keeps ~64 newest');
+}
+
+function renderTrends(history) {
+  const canvas = document.getElementById('trendChart');
+  const hint = document.getElementById('trendHint');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const pad = { l: 34, r: 92, t: 8, b: 18 };
+  ctx.clearRect(0, 0, W, H);
+  hint.textContent = '';
+
+  const pts = history.filter(h => h.received_at);
+  if (pts.length < 2) {
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Waiting for a second metrics snapshot (pushed every ~10 min)...', W / 2, H / 2);
+    return;
+  }
+
+  const series = [
+    { key: 'heap', color: '#3b82f6', label: 'Heap KB', get: h => h.health && h.health.heap_free ? Math.round(h.health.heap_free / 1024) : null },
+    { key: 'rssi', color: '#22c55e', label: 'RSSI dBm', get: h => h.rssi && h.rssi.mean != null ? +h.rssi.mean : null },
+    { key: 'scan', color: '#eab308', label: 'Scan ms', get: h => h.scan && h.scan.time_ms_avg != null ? +h.scan.time_ms_avg : null },
+    { key: 'up', color: '#f97316', label: 'Uplink %', get: h => h.wifi && h.wifi.uptime_pct != null ? +h.wifi.uptime_pct : null },
+  ];
+
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  // x positions: newest at right
+  const xs = pts.map((_, i) => pad.l + (i / (pts.length - 1)) * iw);
+
+  // draw frame + time axis
+  ctx.strokeStyle = '#1f2937';
+  ctx.fillStyle = '#6b7280';
+  ctx.font = '9px monospace';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(pad.l, pad.t); ctx.lineTo(pad.l, pad.t + ih); ctx.lineTo(pad.l + iw, pad.t + ih);
+  ctx.stroke();
+  const t0 = Math.min(...pts.map(h => h.received_at));
+  const t1 = Math.max(...pts.map(h => h.received_at));
+  const fmtT = ts => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  ctx.textAlign = 'left';
+  ctx.fillText(fmtT(t0), pad.l, H - 4);
+  ctx.textAlign = 'right';
+  ctx.fillText(fmtT(t1), pad.l + iw, H - 4);
+
+  // auto-scale each series on its own axis, draw normalized polylines
+  let labelIdx = 0;
+  for (const s of series) {
+    const vals = pts.map(h => s.get(h));
+    const good = vals.filter(v => v != null);
+    if (good.length < 2) continue;
+    let lo = Math.min(...good), hi = Math.max(...good);
+    if (hi - lo < 1) { lo -= 1; hi += 1; }
+    const range = hi - lo || 1;
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    vals.forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      const y = pad.t + ih - ((v - lo) / range) * ih;
+      if (!started) { ctx.moveTo(xs[i], y); started = true; }
+      else ctx.lineTo(xs[i], y);
+    });
+    ctx.stroke();
+    // right-side axis label (value recent) — one row per series
+    const lastVal = good[good.length - 1];
+    ctx.fillStyle = s.color;
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(s.label + ' ' + Math.round(lastVal), pad.l + iw + 4, pad.t + 9 + labelIdx * 12);
+    labelIdx++;
+  }
+  const noref = history.length;
+  hint.textContent = noref + ' stored snapshots · each series auto-scales to its own min/max';
 }
 
 const saved = localStorage.getItem('rf_api_url');
