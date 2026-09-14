@@ -160,6 +160,7 @@ void repeater_task_activate(void) {
     IPAddress ap_lease_start(192, 168, 4, 10);
     IPAddress ap_dns(8, 8, 8, 8);
 
+    WiFi.mode(WIFI_AP_STA);
     if (!WiFi.AP.begin()) {
         Serial.println("[REPEATER] AP begin failed");
         WiFi.mode(WIFI_STA);
