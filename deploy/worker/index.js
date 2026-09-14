@@ -121,6 +121,90 @@ async function handleGetMap(env) {
   });
 }
 
+/* Distance buckets (meters from base, derived from RSSI path loss). The
+ * website heatmap rows map onto these so the accumulated averages are always
+ * grouped by how far away the router is, not by which router it is. */
+const DISTANCE_BUCKETS = [
+  { label: '0-2m', min: 0,  max: 2 },
+  { label: '3-4m', min: 3,  max: 4 },
+  { label: '5-6m', min: 5,  max: 6 },
+  { label: '7-9m', min: 7,  max: 9 },
+  { label: '10-13m', min: 10, max: 13 },
+  { label: '14-20m', min: 14, max: 20 },
+];
+
+async function handleGetDistance(env) {
+  const data = await env.RF_MAP.get('entries');
+  const entries = data ? JSON.parse(data) : [];
+
+  /* Accumulate averages over time: bucket = (distance ring, hour). */
+  const hourMap = {};
+  for (let h = 0; h < 24; h++) hourMap[h] = {};
+  const ringTotals = {};
+  let totalSamples = 0;
+  let weakSamples = 0;
+
+  for (const e of entries) {
+    if (e.rssi == null) continue;
+    const ring = e.ring != null ? e.ring : ringFromRssi(e.rssi);
+    const hour = (e.hour != null) ? e.hour : (e.timestamp ? new Date(e.timestamp).getHours() : 0);
+    if (hour < 0 || hour > 23) continue;
+
+    const bucketIdx = DISTANCE_BUCKETS.findIndex(b => ring >= b.min && ring <= b.max);
+    if (bucketIdx < 0) continue;
+
+    const key = `${bucketIdx}_${hour}`;
+    if (!hourMap[hour][bucketIdx]) {
+      hourMap[hour][bucketIdx] = { sum: 0, count: 0, max: -128, min: 0 };
+    }
+    const c = hourMap[hour][bucketIdx];
+    c.sum += e.rssi;
+    c.count++;
+    if (e.rssi > c.max) c.max = e.rssi;
+    if (e.rssi < c.min) c.min = e.rssi;
+
+    if (!ringTotals[bucketIdx]) ringTotals[bucketIdx] = { sum: 0, count: 0 };
+    ringTotals[bucketIdx].sum += e.rssi;
+    ringTotals[bucketIdx].count++;
+    totalSamples++;
+    if (e.is_weak || e.rssi < -75) weakSamples++;
+  }
+
+  const cells = [];
+  for (let h = 0; h < 24; h++) {
+    for (let b = 0; b < DISTANCE_BUCKETS.length; b++) {
+      const c = hourMap[h][b];
+      if (!c || !c.count) continue;
+      cells.push({
+        bucket: b,
+        bucket_label: DISTANCE_BUCKETS[b].label,
+        hour: h,
+        rssi_avg: Math.round(c.sum / c.count),
+        rssi_min: c.min,
+        rssi_max: c.max,
+        sample_count: c.count,
+      });
+    }
+  }
+
+  const rings = DISTANCE_BUCKETS.map((b, i) => ({
+    bucket: i,
+    label: b.label,
+    rssi_avg: ringTotals[i] ? Math.round(ringTotals[i].sum / ringTotals[i].count) : null,
+    sample_count: ringTotals[i] ? ringTotals[i].count : 0,
+  }));
+
+  return new Response(JSON.stringify({
+    cells,
+    rings,
+    buckets: DISTANCE_BUCKETS,
+    total_samples: totalSamples,
+    weak_samples: weakSamples,
+  }), {
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
 async function handleGetStatus(env) {
   const data = await env.RF_MAP.get('entries');
   const entries = data ? JSON.parse(data) : [];
@@ -143,6 +227,7 @@ async function handleGetStatus(env) {
       source_name: 'none',
       confidence: 0,
       mobile_state: 0,
+      base_activation_count: 0,
       updated: 0,
       model: { trained: false, samples: 0, pos: 0, neg: 0 },
     };
@@ -321,6 +406,9 @@ export default {
       }
       if (url.pathname === '/api/map' && request.method === 'GET') {
         return await handleGetMap(env);
+      }
+      if (url.pathname === '/api/distance' && request.method === 'GET') {
+        return await handleGetDistance(env);
       }
       if (url.pathname === '/api/status' && request.method === 'GET') {
         return await handleGetStatus(env);

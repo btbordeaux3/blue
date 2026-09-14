@@ -15,6 +15,7 @@ struct push_decision_t {
     uint16_t model_pos;
     uint16_t model_neg;
     uint8_t  mobile_state;
+    uint32_t base_activation_count; /* how many times base commanded mobile ON */
 };
 
 void push_task_init(const char *api_url);

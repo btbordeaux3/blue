@@ -1,0 +1,20 @@
+/*
+ * wifi_creds.h - Local build-time WiFi credentials for the base station.
+ *
+ * NOTE: This file is intentionally NOT committed to git (see .gitignore).
+ * The base station is deployed wall-powered in a fixed location, so its
+ * uplink network is baked into the firmware at build time. The mobile
+ * unit, in contrast, is provisioned at runtime by the host esp-wifi-agent
+ * over the USB wire - it must never rely on this file.
+ *
+ * Copy wifi_creds.h.example to wifi_creds.h and fill in the values for
+ * the network the base should join.
+ */
+
+#ifndef WIFI_CREDS_H
+#define WIFI_CREDS_H
+
+#define WIFI_SSID "3bbo"
+#define WIFI_PASS "WeLuvGville202"
+
+#endif

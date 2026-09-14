@@ -8,8 +8,9 @@
  * Interview talking points:
  *   - Fixed-size packed structs for zero-copy deserialization
  *   - Magic enums for type safety in a C-struct protocol
- *   - RSSI thresholds chosen empirically: -75 dBm is the boundary where
- *     TCP retransmissions start climbing on consumer routers
+ *   - RSSI thresholds chosen empirically: -65 dBm is an "alright/mediocre"
+ *     signal; we trigger the extender there (generous), while -55 dBm starts
+ *     turning it back off for lasting hysteresis.
  *   - BSSID hashes (32-bit) instead of full MACs to save bandwidth
  *     and avoid leaking AP identity in transit
  */
@@ -30,17 +31,37 @@
 #define DEVICE_TYPE DEVICE_BASE
 #endif
 
+#if __has_include("wifi_creds.h")
+#include "wifi_creds.h"
+#endif
+
 #define WIFI_CHANNEL         6
-#define WIFI_SSID            "YOUR_WIFI_SSID"
-#define WIFI_PASS            "YOUR_WIFI_PASSWORD"
+
+#ifndef WIFI_SSID
+#define WIFI_SSID            "3bbo"
+#endif
+
+#ifndef WIFI_PASS
+#define WIFI_PASS            "WeLuvGville202"
+#endif
+
+#ifndef REPEATER_SSID
 #define REPEATER_SSID        "3bbo_Ext"
-#define REPEATER_PASS        "YOUR_EXTENDER_PASSWORD"
+#endif
+
+#ifndef REPEATER_PASS
+#define REPEATER_PASS        WIFI_PASS
+#endif
 #define ESPNOW_CHANNEL       6
 #define MAX_PEERS            4
 #define MAX_SCAN_APS         32
 #define TOP_N_RSSI           16
-#define WEAK_RSSI_THRESHOLD  -75
-#define STRONG_RSSI_THRESHOLD -60
+/* Activation thresholds. WEAK is deliberately lenient (-65 dBm, "mediocre"
+ * FAIR signal) so the mobile flips the repeater on well before the link
+ * collapses; STRONG stays comfortably above it to keep hysteresis and stop
+ * the repeater from flapping only a few dBm later. */
+#define WEAK_RSSI_THRESHOLD  -65
+#define STRONG_RSSI_THRESHOLD -55
 #define CONNECTION_TIMEOUT_MS 30000
 #define HEARTBEAT_INTERVAL_MS 10000
 #define REPORT_INTERVAL_MS    10000

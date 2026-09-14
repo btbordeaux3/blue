@@ -38,6 +38,20 @@
   .heatmap { display: grid; gap: 1px; margin-top: 6px; }
   .heatmap-cell { width: 100%; aspect-ratio: 1; border-radius: 2px; min-width: 11px; }
   .heatmap-label { font-size: 0.55rem; color: var(--dim); text-align: center; padding: 2px; }
+  /* Compact "heatmap-compact": fixed small cells so the whole chart is one
+     small block instead of a tall multi-AP table. */
+  .heatmap-compact { max-width: 100%; }
+  .heatmap-compact .hm-grid { display: grid; gap: 1px; margin-top: 4px; width: max-content; min-width: 100%; }
+  .heatmap-compact .hm-cell { width: 17px; height: 15px; border-radius: 2px; min-width: 17px; }
+  .heatmap-compact .hm-label { font-size: 0.5rem; color: var(--dim); line-height: 15px; padding: 0 4px; white-space: nowrap; }
+  .heatmap-compact .hm-hour { font-size: 0.5rem; color: var(--dim); text-align: center; line-height: 13px; }
+  .hm-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 0.6rem; color: var(--dim); margin-top: 6px; }
+  .hm-legend span { display: flex; align-items: center; gap: 4px; }
+  .hm-legend .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .heatmap-mini { max-height: 210px; overflow-y: auto; overflow-x: auto; }
+  .heatmap-mini .hm-grid { grid-template-columns: repeat(24, 11px); gap: 1px; }
+  .heatmap-mini .hm-cell { width: 11px; height: 10px; border-radius: 1px; }
+  .heatmap-mini .hm-label { font-size: 0.45rem; padding: 0 2px; }
   .bar-chart { display: flex; align-items: flex-end; gap: 4px; height: 120px; margin-top: 12px; }
   .bar { flex: 1; border-radius: 2px 2px 0 0; min-width: 8px; transition: height 0.3s; position: relative; }
   .bar:hover { opacity: 0.8; }
@@ -102,6 +116,11 @@
 
 <div class="grid">
   <div class="card">
+    <h2>Base On-Commands</h2>
+    <div class="stat blue" id="baseCmds">--</div>
+    <div class="label">times the base told the mobile to turn on</div>
+  </div>
+  <div class="card">
     <h2>Repeater</h2>
     <div class="stat" id="repeaterStatus" style="font-size:1.1rem">--</div>
     <div class="label" id="repeaterSource">waiting for data</div>
@@ -147,10 +166,14 @@
 </div>
 
 <div class="card" style="margin-bottom:20px">
-  <h2>Signal Heatmap &mdash; Hour vs AP</h2>
-  <div class="heatmap-container">
-    <div class="heatmap" id="heatmap"></div>
-  </div>
+  <h2>Signal Heatmap &mdash; Hour vs Distance (averages over time)</h2>
+  <div class="label" style="margin-bottom:4px">Average RSSI per hour &times; estimated distance from the base station. Only the base's own scans are mapped.</div>
+  <div class="heatmap-container heatmap-compact" id="distanceHeatmap"></div>
+</div>
+
+<div class="card" style="margin-bottom:20px">
+  <h2>Signal Heatmap &mdash; Hour vs AP (compact)</h2>
+  <div class="heatmap-container heatmap-compact" id="apHeatmap"></div>
 </div>
 
 <div class="card">
@@ -257,13 +280,14 @@ function log(msg) {
 async function fetchData() {
   if (!API_URL) return;
   try {
-    const [mapRes, statusRes, histRes, metricsRes, mhistRes, improvRes] = await Promise.all([
+    const [mapRes, statusRes, histRes, metricsRes, mhistRes, improvRes, distRes] = await Promise.all([
       fetch(API_URL + '/api/map'),
       fetch(API_URL + '/api/status'),
       fetch(API_URL + '/api/history?limit=50'),
       fetch(API_URL + '/api/metrics').catch(() => ({ json: () => null })),
       fetch(API_URL + '/api/metrics/history').catch(() => ({ json: () => null })),
       fetch(API_URL + '/api/improvement').catch(() => ({ json: () => null })),
+      fetch(API_URL + '/api/distance').catch(() => ({ json: () => null })),
     ]);
     const map = await mapRes.json();
     const status = await statusRes.json();
@@ -271,6 +295,7 @@ async function fetchData() {
     const metrics = await metricsRes.json().catch(() => null);
     const mhist = await mhistRes.json().catch(() => null);
     const improv = await improvRes.json().catch(() => null);
+    const dist = await distRes.json().catch(() => null);
 
     document.getElementById('statusDot').className = 'status-dot on';
 
@@ -292,7 +317,8 @@ async function fetchData() {
 
     renderHourChart(map.entries || []);
     renderRssiChart(map.entries || []);
-    renderHeatmap(map.entries || []);
+    renderDistanceHeatmap(dist);
+    renderCompactApHeatmap(map.entries || []);
     renderHouseMap(map.entries || []);
     renderEvents(hist.entries || []);
     renderMetrics(metrics);
@@ -381,48 +407,125 @@ function renderRssiChart(entries) {
   }
 }
 
-function renderHeatmap(entries) {
-  const container = document.getElementById('heatmap');
+/* Distance heatmap: rows = distance buckets from base, cols = hour,
+ * color = averaged RSSI accumulated over time (server-aggregated). */
+function renderDistanceHeatmap(dist) {
+  const container = document.getElementById('distanceHeatmap');
   container.innerHTML = '';
-  const aps = [...new Set(entries.map(e => e.bssid_hash))].slice(0, 12);
-  const hours = [...new Set(entries.map(e => e.hour))].sort((a, b) => a - b);
-  if (!aps.length || !hours.length) {
-    container.innerHTML = '<div style="color:var(--dim);padding:20px;text-align:center">No data yet. Waiting for base station...</div>';
+  if (!dist || (!dist.cells || !dist.cells.length)) {
+    container.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center">No data yet. Waiting for the base station to scan...</div>';
+    return;
+  }
+  const buckets = dist.buckets || [];
+  const grid = document.createElement('div');
+  grid.className = 'hm-grid';
+  grid.style.gridTemplateColumns = `76px repeat(24, minmax(17px, 1fr))`;
+  grid.style.gridTemplateRows = `14px repeat(${buckets.length}, 15px)`;
+
+  const mark = (cell, row, col) => { cell.style.gridRow = row; cell.style.gridColumn = col; };
+
+  // corner
+  const corner = document.createElement('div');
+  corner.className = 'hm-label';
+  corner.textContent = 'dist/h';
+  mark(corner, 1, 1);
+  grid.appendChild(corner);
+  // hour labels
+  for (let h = 0; h < 24; h++) {
+    const l = document.createElement('div');
+    l.className = 'hm-hour';
+    l.textContent = h % 3 === 0 ? h : '';
+    mark(l, 1, h + 2);
+    grid.appendChild(l);
+  }
+  // cells lookup
+  const byKey = {};
+  for (const c of dist.cells) byKey[c.bucket + '_' + c.hour] = c;
+  for (let b = 0; b < buckets.length; b++) {
+    const lab = document.createElement('div');
+    lab.className = 'hm-label';
+    lab.textContent = buckets[b].label;
+    mark(lab, b + 2, 1);
+    grid.appendChild(lab);
+    for (let h = 0; h < 24; h++) {
+      const cell = document.createElement('div');
+      cell.className = 'hm-cell';
+      const c = byKey[b + '_' + h];
+      cell.style.background = c ? rssiColor(c.rssi_avg) : '#1f2937';
+      cell.title = c
+        ? buckets[b].label + ' @ ' + h + ':00 — ' + Math.round(c.rssi_avg) + ' dBm avg (n=' + c.sample_count + ')'
+        : 'no data';
+      mark(cell, b + 2, h + 2);
+      grid.appendChild(cell);
+    }
+  }
+  container.appendChild(grid);
+  const legend = document.createElement('div');
+  legend.className = 'hm-legend';
+  legend.innerHTML = [
+    ['#22c55e', 'strong (≥ -50)'], ['#4ade80', 'good (-60)'], ['#eab308', 'fair (-70)'],
+    ['#f97316', 'weak (-80)'], ['#ef4444', 'dead (< -80)'],
+  ].map(([c, t]) => `<span><span class="swatch" style="background:${c}"></span>${t}</span>`).join('') +
+    `<span style="margin-left:auto">${dist.total_samples || 0} samples averaged over time</span>`;
+  container.appendChild(legend);
+}
+
+/* Hour vs AP heatmap, rebuilt tiny and scrollable: top 8 APs at most, fixed
+ * 11px cells, 24-column grid, capped height with vertical scroll. */
+function renderCompactApHeatmap(entries) {
+  const container = document.getElementById('apHeatmap');
+  container.innerHTML = '';
+  const aps = [...new Set(entries.map(e => e.bssid_hash))].slice(0, 8);
+  const hours = Array.from({ length: 24 }, (_, i) => i);
+  if (!aps.length) {
+    container.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center">No data yet. Waiting for the base station...</div>';
     return;
   }
   const grid = {};
   for (const e of entries) {
-    grid[`${e.bssid_hash}_${e.hour}`] = e.rssi_avg || e.rssi || -80;
+    const h = e.hour != null ? e.hour : new Date(e.timestamp).getHours();
+    const key = e.bssid_hash + '_' + h;
+    if (!grid[key]) grid[key] = [];
+    grid[key].push(e.rssi_avg || e.rssi || -80);
   }
-  const labelRow = document.createElement('div');
-  labelRow.style.display = 'contents';
+  const avgOf = (list) => list.reduce((a, b) => a + b, 0) / list.length;
+
+  const wrap = document.createElement('div');
+  wrap.style.display = 'flex';
+  wrap.classList.add('heatmap-mini');
+
+  const g = document.createElement('div');
+  g.className = 'hm-grid';
+  g.style.gridTemplateColumns = `46px repeat(24, 11px)`;
+
   const corner = document.createElement('div');
-  corner.className = 'heatmap-label';
-  labelRow.appendChild(corner);
-  for (const h of hours) {
-    const lbl = document.createElement('div');
-    lbl.className = 'heatmap-label';
-    lbl.textContent = h + 'h';
-    labelRow.appendChild(lbl);
+  corner.className = 'hm-label';
+  corner.textContent = 'AP/h';
+  g.appendChild(corner);
+  for (let h = 0; h < 24; h++) {
+    const l = document.createElement('div');
+    l.className = 'hm-hour';
+    l.textContent = h % 6 === 0 ? h : '';
+    g.appendChild(l);
   }
-  container.appendChild(labelRow);
-  container.style.gridTemplateColumns = `80px repeat(${hours.length}, 1fr)`;
   for (const ap of aps) {
-    const rowLabel = document.createElement('div');
-    rowLabel.className = 'heatmap-label';
-    rowLabel.style.textAlign = 'right';
-    rowLabel.style.paddingRight = '6px';
-    rowLabel.textContent = 'AP ' + ap.toString(16).slice(-4);
-    container.appendChild(rowLabel);
-    for (const h of hours) {
+    const lab = document.createElement('div');
+    lab.className = 'hm-label';
+    lab.textContent = ap.toString(16).slice(-4);
+    lab.title = 'AP 0x' + ap.toString(16).slice(-8);
+    g.appendChild(lab);
+    for (let h = 0; h < 24; h++) {
       const cell = document.createElement('div');
-      cell.className = 'heatmap-cell';
-      const rssi = grid[`${ap}_${h}`];
+      cell.className = 'hm-cell';
+      const list = grid[ap + '_' + h];
+      const rssi = list ? avgOf(list) : null;
       cell.style.background = rssi != null ? rssiColor(rssi) : '#1f2937';
-      cell.title = `AP ${ap.toString(16).slice(-4)} @ ${h}:00 — ${rssi != null ? Math.round(rssi) + ' dBm' : 'no data'}`;
-      container.appendChild(cell);
+      cell.title = 'AP 0x' + ap.toString(16).slice(-8) + ' @ ' + h + ':00 — ' + (rssi != null ? Math.round(rssi) + ' dBm' : 'no data');
+      g.appendChild(cell);
     }
   }
+  wrap.appendChild(g);
+  container.appendChild(wrap);
 }
 
 function rssiToMeters(rssi) {
@@ -638,6 +741,15 @@ function renderDecision(d) {
   srcEl.textContent = active
     ? (name + conf + (isMl ? ' (predicted before drop)' : ''))
     : 'extender not running';
+
+  const cmds = d.base_activation_count;
+  const cmdsEl = document.getElementById('baseCmds');
+  if (cmds != null) {
+    cmdsEl.textContent = cmds;
+    cmdsEl.className = 'stat blue';
+  } else {
+    cmdsEl.textContent = '--';
+  }
 
   const m = d.model || {};
   const mlEl = document.getElementById('mlStatus');

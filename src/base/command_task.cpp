@@ -47,6 +47,11 @@ static uint32_t cmd_sequence = 0;
 static bool repeater_active = false;
 static bool ml_controlled = false;      /* base may only undo what it did */
 
+/* How many times the base has commanded the mobile's repeater ON. Persisted to
+ * the dashboard through every decision push so the site can show a lifetime
+ * counter of base-commanded activations. */
+static uint32_t base_activation_count = 0;
+
 /* What the MOBILE reports about itself (ground truth for the dashboard). */
 static bool mobile_repeater_on = false;
 static uint8_t mobile_last_state = STATE_SLEEP;
@@ -70,6 +75,7 @@ static void push_current_decision(void) {
     d.model_pos = st.pos;
     d.model_neg = st.neg;
     d.mobile_state = mobile_last_state;
+    d.base_activation_count = base_activation_count;
     push_task_send_decision(&d);
 }
 
@@ -98,12 +104,15 @@ static void on_report_received(const fingerprint_msg_t *report, const uint8_t *m
 
     espnow_send_ack(MSG_FINGERPRINT, report->sequence_num, 0);
 
+    /* The mobile's fingerprint is NOT uploaded to the RF map: the base is the
+     * only node whose scans feed the distance heatmap, so a moving handheld
+     * can never smear the router distances on the website. The mobile's scan
+     * is still used locally for learning/labelling below. */
     rf_fingerprint_t fp;
     memset(&fp, 0, sizeof(fp));
     fp.count = report->scan_count;
     memcpy(fp.bssid_hashes, report->bssid_hashes, sizeof(fp.bssid_hashes));
     memcpy(fp.rssi_values, report->rssi_values, sizeof(fp.rssi_values));
-    push_task_send_fingerprint(&fp);
 
     struct tm timeinfo;
     time_t now;
@@ -171,6 +180,8 @@ static void on_report_received(const fingerprint_msg_t *report, const uint8_t *m
         espnow_send_command(&cmd);
         repeater_active = true;
         ml_controlled = true;
+        base_activation_count++;
+        push_current_decision();
         Serial.printf("[CMD] ML ACTIVATE (p=%.2f conf=%.2f, signature learned bad)\n",
                       pred.probability, pred.confidence);
     } else if (repeater_active && ml_controlled && pred.should_deactivate &&
@@ -187,6 +198,7 @@ static void on_report_received(const fingerprint_msg_t *report, const uint8_t *m
         espnow_send_command(&cmd);
         repeater_active = false;
         ml_controlled = false;
+        push_current_decision();
         Serial.printf("[CMD] ML DEACTIVATE (p=%.2f, zone recovered)\n", pred.probability);
     }
 }

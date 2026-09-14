@@ -113,9 +113,11 @@ static void flush_decision(void) {
     snprintf(json, sizeof(json),
         "{\"active\":%u,\"source\":%u,\"source_name\":\"%s\","
         "\"confidence\":%.2f,\"mobile_state\":%u,"
+        "\"base_activation_count\":%lu,"
         "\"model\":{\"trained\":%u,\"samples\":%u,\"pos\":%u,\"neg\":%u}}",
         last_decision.active, last_decision.source, src,
         last_decision.confidence, last_decision.mobile_state,
+        (unsigned long)last_decision.base_activation_count,
         last_decision.model_trained, last_decision.model_samples,
         last_decision.model_pos, last_decision.model_neg);
     post_json("/api/decision", json);
