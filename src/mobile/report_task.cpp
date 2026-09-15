@@ -17,6 +17,7 @@
 #include "espnow_comm.h"
 #include "rf_fingerprint.h"
 #include "power_manager.h"
+#include "metrics.h"
 #include "common.h"
 
 #define BUFFERED_REPORTS_MAX 32
@@ -80,6 +81,7 @@ void report_task_init(void) {
 
 void report_task_start(void) {
     xTaskCreatePinnedToCore(report_task, "report", 4096, NULL, 3, &report_handle, 0);
+    metrics_register_task(METRICS_TASK_REPORT, report_handle);
 }
 
 bool report_task_send_fingerprint(const rf_fingerprint_t *fp) {

@@ -198,8 +198,20 @@ void     metrics_on_repeater_deactivate(void);
 void     metrics_set_weak_signal_time(uint32_t timestamp_ms);
 void     metrics_record_activation_latency(uint32_t started_ms);
 
+/* Which task to track stack high-water marks for. Slots map onto the
+ * dashboard's Task Stacks card so each node reports the tasks it actually
+ * runs (base: scan; mobile: pm/scan/report/repeater). */
+enum metrics_task_slot_t : uint8_t {
+    METRICS_TASK_PM       = 0,
+    METRICS_TASK_SCAN     = 1,
+    METRICS_TASK_REPORT   = 2,
+    METRICS_TASK_REPEATER = 3,
+    METRICS_TASK_SLOTS    = 4
+};
+
 /* Health monitoring (call periodically from a task) */
 void     metrics_check_task_health(void);
+void     metrics_register_task(uint8_t slot, TaskHandle_t handle);
 void     metrics_set_pm_handle(TaskHandle_t handle);
 
 /* Snapshot for API push */

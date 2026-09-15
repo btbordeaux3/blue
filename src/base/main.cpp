@@ -41,7 +41,7 @@
 #include "metrics.h"
 
 static uint8_t base_mac[6];
-static uint8_t mobile_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static uint8_t mobile_mac[6] = {0x8C, 0x94, 0xDF, 0x71, 0x4F, 0xB0};
 
 #ifndef API_URL
 #define API_URL "https://rf-map-api.example.workers.dev"

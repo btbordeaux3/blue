@@ -31,6 +31,7 @@
 
 #include "repeater_task.h"
 #include "common.h"
+#include "metrics.h"
 #include <WiFi.h>
 #include <Network.h>
 #include <string.h>
@@ -137,6 +138,7 @@ void repeater_task_init(void) {
 
 void repeater_task_start(void) {
     xTaskCreatePinnedToCore(repeater_task, "repeater", 8192, NULL, 4, &repeater_handle, 1);
+    metrics_register_task(METRICS_TASK_REPEATER, repeater_handle);
 }
 
 void repeater_task_activate(void) {

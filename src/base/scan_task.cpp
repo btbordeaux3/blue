@@ -78,6 +78,7 @@ void scan_task_init(void) {
 
 void scan_task_start(void) {
     xTaskCreatePinnedToCore(scan_task, "scan", 8192, NULL, 3, &scan_task_handle, 1);
+    metrics_register_task(METRICS_TASK_SCAN, scan_task_handle);
 }
 
 bool scan_task_get_fingerprint(rf_fingerprint_t *fp) {

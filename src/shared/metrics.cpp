@@ -14,6 +14,7 @@
 
 #include "metrics.h"
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <math.h>
 
 /* ---- Event Ring Buffer ---- */
@@ -58,6 +59,11 @@ static uint32_t wifi_state_changed_at = 0;
 static uint32_t repeater_activated_at = 0;
 static uint32_t sleep_entered_at = 0;
 static TaskHandle_t pm_task_handle = NULL;
+
+/* Registered task handles for stack high-water marks. The mobile registers
+ * pm/scan/report/repeater; the base registers its scan task. Slots that a
+ * node never runs stay NULL and report 0 ("task never ran"). */
+static TaskHandle_t task_handles[METRICS_TASK_SLOTS] = { NULL, NULL, NULL, NULL };
 
 /* ======================================================================
  * Welford's Online Algorithm
@@ -296,7 +302,14 @@ void metrics_record_activation_latency(uint32_t started_ms) {
 /* ---- Health monitoring ---- */
 
 void metrics_set_pm_handle(TaskHandle_t handle) {
-    pm_task_handle = handle;
+    metrics_register_task(METRICS_TASK_PM, handle);
+}
+
+void metrics_register_task(uint8_t slot, TaskHandle_t handle) {
+    if (slot < METRICS_TASK_SLOTS) {
+        task_handles[slot] = handle;
+        if (slot == METRICS_TASK_PM) pm_task_handle = handle;
+    }
 }
 
 void metrics_check_task_health(void) {
@@ -356,8 +369,17 @@ void metrics_get_snapshot(metrics_snapshot_t *out) {
     out->free_heap_bytes = esp_get_free_heap_size();
     out->min_free_heap_bytes = min_free_heap;
 
-    if (pm_task_handle) {
-        out->pm_stack_remaining = uxTaskGetStackHighWaterMark(pm_task_handle);
+    if (task_handles[METRICS_TASK_PM]) {
+        out->pm_stack_remaining = uxTaskGetStackHighWaterMark(task_handles[METRICS_TASK_PM]);
+    }
+    if (task_handles[METRICS_TASK_SCAN]) {
+        out->scan_stack_remaining = uxTaskGetStackHighWaterMark(task_handles[METRICS_TASK_SCAN]);
+    }
+    if (task_handles[METRICS_TASK_REPORT]) {
+        out->report_stack_remaining = uxTaskGetStackHighWaterMark(task_handles[METRICS_TASK_REPORT]);
+    }
+    if (task_handles[METRICS_TASK_REPEATER]) {
+        out->repeater_stack_remaining = uxTaskGetStackHighWaterMark(task_handles[METRICS_TASK_REPEATER]);
     }
 
     out->rssi_mean = rssi_stats.mean;
@@ -389,6 +411,10 @@ int metrics_snapshot_to_json(const metrics_snapshot_t *s, char *buf, size_t buf_
 
     return snprintf(buf, buf_len,
         "{"
+        "\"uptime_ms\":%lu,"
+        "\"stack\":{"
+            "\"pm\":%u,\"scan\":%u,\"report\":%u,\"repeater\":%u"
+        "},"
         "\"wifi\":{"
             "\"connects\":%lu,\"connect_fails\":%lu,"
             "\"connect_ms_avg\":%.1f,\"connect_ms_worst\":%.0f,"
@@ -422,6 +448,9 @@ int metrics_snapshot_to_json(const metrics_snapshot_t *s, char *buf, size_t buf_
             "\"logged\":%lu,\"dropped\":%lu"
         "}"
         "}",
+        (unsigned long)(esp_timer_get_time() / 1000),
+        s->pm_stack_remaining, s->scan_stack_remaining,
+        s->report_stack_remaining, s->repeater_stack_remaining,
         s->wifi_connect_count, s->wifi_connect_fail_count,
         wifi_mean, wifi_p99,
         wifi_upt,

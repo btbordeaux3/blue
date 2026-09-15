@@ -234,7 +234,7 @@
 </div>
 
 <div class="card">
-  <h2>Metrics Trends &mdash; last 200 snapshots</h2>
+  <h2>Metrics Trends &mdash; up to 2000 snapshots</h2>
   <div class="trend-wrap"><canvas id="trendChart" width="900" height="220"></canvas></div>
   <div class="legend">
     <span><span class="swatch" style="background:#3b82f6"></span>Heap (KB)</span>
@@ -287,25 +287,30 @@ async function clearData() {
   }
 }
 
+async function safeFetchJson(url, label) {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(label + ' HTTP ' + res.status);
+    return await res.json();
+  } catch (e) {
+    log(label + ' failed: ' + e.message);
+    return null;
+  }
+}
+
 async function fetchData() {
   if (!API_URL) return;
   try {
-    const [mapRes, statusRes, histRes, metricsRes, mhistRes, improvRes, distRes] = await Promise.all([
-      fetch(API_URL + '/api/map'),
-      fetch(API_URL + '/api/status'),
-      fetch(API_URL + '/api/history?limit=50'),
-      fetch(API_URL + '/api/metrics').catch(() => ({ json: () => null })),
-      fetch(API_URL + '/api/metrics/history').catch(() => ({ json: () => null })),
-      fetch(API_URL + '/api/improvement').catch(() => ({ json: () => null })),
-      fetch(API_URL + '/api/distance').catch(() => ({ json: () => null })),
+    const [map, status, hist, metrics, mhist, improv, dist] = await Promise.all([
+      safeFetchJson(API_URL + '/api/map', 'map'),
+      safeFetchJson(API_URL + '/api/status', 'status'),
+      safeFetchJson(API_URL + '/api/history?limit=50', 'history'),
+      safeFetchJson(API_URL + '/api/metrics', 'metrics'),
+      safeFetchJson(API_URL + '/api/metrics/history', 'metrics history'),
+      safeFetchJson(API_URL + '/api/improvement', 'improvement'),
+      safeFetchJson(API_URL + '/api/distance', 'distance'),
     ]);
-    const map = await mapRes.json();
-    const status = await statusRes.json();
-    const hist = await histRes.json();
-    const metrics = await metricsRes.json().catch(() => null);
-    const mhist = await mhistRes.json().catch(() => null);
-    const improv = await improvRes.json().catch(() => null);
-    const dist = await distRes.json().catch(() => null);
+    if (!map || !status) throw new Error('map/status unavailable');
 
     document.getElementById('statusDot').className = 'status-dot on';
 
@@ -323,6 +328,13 @@ async function fetchData() {
       document.getElementById('lastUpdate').textContent = d.toLocaleTimeString();
       const ago = Math.round((Date.now() - status.last_update) / 1000);
       document.getElementById('lastUpdateAgo').textContent = ago + 's ago';
+      /* If the base hasn't posted in a while, flag it instead of silently
+       * showing a frozen-looking dashboard. */
+      if (ago > 120 * 60) {
+        document.getElementById('statusDot').className = 'status-dot off';
+        document.getElementById('lastUpdateAgo').textContent =
+          ago + 's ago — STALE, base not posting';
+      }
     }
 
     renderHourChart(map.entries || []);
@@ -330,7 +342,7 @@ async function fetchData() {
     renderDistanceHeatmap(dist);
     renderCompactApHeatmap(map.entries || []);
     renderDistanceList(map.entries || []);
-    renderEvents(hist.entries || []);
+    renderEvents(hist && hist.entries ? hist.entries : []);
     renderMetrics(metrics);
     renderTrends(mhist && mhist.entries ? mhist.entries : []);
     renderDecision(status.decision);
@@ -423,7 +435,7 @@ function renderDistanceHeatmap(dist) {
   const container = document.getElementById('distanceHeatmap');
   container.innerHTML = '';
   if (!dist || (!dist.cells || !dist.cells.length)) {
-    container.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center">No data yet. Waiting for the base station to scan...</div>';
+    container.innerHTML = '<div style="color:var(--dim);padding:14px;text-align:center">No distance samples yet. Waiting for the base station to scan... (if this persists, check the log for endpoint errors)</div>';
     return;
   }
   const buckets = dist.buckets || [];

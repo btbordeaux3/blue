@@ -45,6 +45,112 @@ function normalizeEntry(d, now, deviceDefault) {
   };
 }
 
+/* =========================================================================
+ * Persistent store: aggregates keep the map alive forever, raw stays small.
+ *
+ * A single KV key "entries" holds a versioned document so a report still
+ * costs exactly ONE KV read + ONE KV write (Cloudflare KV free tier allows
+ * ~1,000 writes/day and the firmware posts every 2 minutes, so <=1 write
+ * per report is a hard requirement). The document accumulates the things
+ * that MUST live forever as running sums (per-AP-per-hour signal, per
+ * distance-bucket-per-hour signal, and lifetime totals), while the raw
+ * "recent" ring stays bounded purely so /api/history and the recent-events
+ * table have something cheap to read.
+ *
+ *   db.v       = schema version (2)
+ *   db.recent  = bounded ring of normalized raw entries (for recent events)
+ *   db.map     = lifetime rollup  key `${bssid_hash}_${hour}`
+ *                { s:sum, c:count, mn:min, mx:max, rs:ringSum, rc:ringCount,
+ *                  wk:weakCount, t:lastTs }
+ *   db.dist    = lifetime rollup  key `${bucketIdx}_${hour}`
+ *                { s:sum, c:count, mn:min, mx:max, wk:weakCount }
+ *   db.meta    = { total, weak, last_update }  (lifetime counters)
+ *
+ * Before v2 the key held a plain array capped at 5000 raw entries ("Total
+ * Entries" sat pinned at 5000 forever). loadDb() folds any legacy array in
+ * on the fly, so the already-collected history is preserved and counted.
+ * ========================================================================= */
+
+const RECENT_MAX = 6000;      /* bounded raw ring for /api/history, recent events */
+const MAP_MAX_KEYS = 20000;   /* cap on distinct (ap, hour) rollup cells, FIFO */
+
+function newDb() {
+  return { v: 2, recent: [], map: {}, dist: {}, meta: { total: 0, weak: 0, last_update: 0 } };
+}
+
+/* Fold one normalized entry into every lifetime aggregate. */
+function foldEntry(db, e) {
+  db.meta.total++;
+  if (e.is_weak) db.meta.weak++;
+  const ts = e.timestamp || 0;
+  if (ts > db.meta.last_update) db.meta.last_update = ts;
+
+  const hour = (e.hour != null) ? e.hour : (ts ? new Date(ts).getHours() : 0);
+  if (hour < 0 || hour > 23) return;
+  const rssi = e.rssi;
+  if (rssi == null) return;
+  const ring = e.ring != null ? e.ring : ringFromRssi(rssi);
+
+  /* Per-AP-per-hour accumulation (drives /api/map charts). */
+  if (e.bssid_hash != null) {
+    const k = e.bssid_hash + '_' + hour;
+    let g = db.map[k];
+    if (!g) { g = { s: 0, c: 0, mn: 0, mx: -128, rs: 0, rc: 0, wk: 0, t: 0 }; db.map[k] = g; }
+    g.s += rssi; g.c++;
+    if (g.c === 1 || rssi < g.mn) g.mn = rssi;
+    if (rssi > g.mx) g.mx = rssi;
+    if (e.ring != null) { g.rs += e.ring; g.rc++; }
+    if (e.is_weak) g.wk++;
+    if (ts > g.t) g.t = ts;
+  }
+
+  /* Distance-bucket-per-hour accumulation (drives /api/distance heatmap). */
+  const bIdx = DISTANCE_BUCKETS.findIndex(b => ring >= b.min && ring <= b.max);
+  if (bIdx >= 0) {
+    const dk = bIdx + '_' + hour;
+    let d = db.dist[dk];
+    if (!d) { d = { s: 0, c: 0, mn: 0, mx: -128, wk: 0 }; db.dist[dk] = d; }
+    d.s += rssi; d.c++;
+    if (d.c === 1 || rssi < d.mn) d.mn = rssi;
+    if (rssi > d.mx) d.mx = rssi;
+    if (e.is_weak) d.wk++;
+  }
+}
+
+/* Drop the oldest-touched rollup cells if the map ever grows too big, so
+ * the JSON document (and every GET response) stays bounded. */
+function pruneMap(db) {
+  const keys = Object.keys(db.map);
+  if (keys.length <= MAP_MAX_KEYS) return;
+  keys.sort((a, b) => (db.map[a].t || 0) - (db.map[b].t || 0));
+  for (let i = 0; i < keys.length - MAP_MAX_KEYS; i++) delete db.map[keys[i]];
+}
+
+/* Read the store. Legacy v1 (plain raw array) is folded to v2 on the fly
+ * without writing, so GETs are never destructive. */
+async function loadDb(env) {
+  const data = await env.RF_MAP.get('entries');
+  if (!data) return newDb();
+  let raw;
+  try { raw = JSON.parse(data); } catch (e) { return newDb(); }
+  if (Array.isArray(raw)) {
+    /* Legacy v1 store: a plain list of raw entries in compact firmware
+     * keys ({h,hr,d,r}) — normalize each before folding so the lifetime
+     * aggregates get the RSSI/hour data, not just the counters. */
+    const db = newDb();
+    const now = Date.now();
+    for (const e of raw) foldEntry(db, normalizeEntry(e, now, DEVICE_BASE));
+    db.recent = raw.slice(-RECENT_MAX).map(e => normalizeEntry(e, e.timestamp || now, DEVICE_BASE));
+    return db;
+  }
+  if (raw && raw.v === 2 && raw.map && raw.meta) return raw;
+  return newDb();
+}
+
+async function saveDb(env, db) {
+  await env.RF_MAP.put('entries', JSON.stringify(db));
+}
+
 async function handleReport(request, env) {
   const data = await request.json();
   const now = Date.now();
@@ -52,8 +158,8 @@ async function handleReport(request, env) {
   /* Heartbeat/status blob ({"total":...,"weak":...}) — this carries the
    * device's LOCAL map count which must not override the server store.
    * We acknowledge it without any KV write: /api/status derives totals
-   * from the authoritative entries key on read, so a node in repeater
-   * mode reporting 0 cannot clobber history. */
+   * from the authoritative store on read, so a node in repeater mode
+   * reporting 0 cannot clobber history. */
   if (!Array.isArray(data) && data.bssid_hash == null && data.total != null) {
     return new Response(JSON.stringify({ ok: true, status: 'heartbeat' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -63,60 +169,41 @@ async function handleReport(request, env) {
   const items = Array.isArray(data) ? data : [data];
   const entries = items.map(d => normalizeEntry(d, now, 'base'));
 
-  /* Append to the entries store. This is the ONLY write a report triggers —
-   * status is computed on read, keeping us inside the free-tier KV budget
-   * (1,000 writes/day). */
-  let map = [];
-  const existing = await env.RF_MAP.get('entries');
-  if (existing) {
-    try { map = JSON.parse(existing); } catch (e) { map = []; }
+  /* One read + one write per report: fold new samples into the lifetime
+   * aggregates and keep the recent ring bounded. NO entry is ever thrown
+   * away without being counted first. */
+  const db = await loadDb(env);
+  for (const e of entries) foldEntry(db, e);
+  db.recent.push(...entries);
+  if (db.recent.length > RECENT_MAX) {
+    db.recent = db.recent.slice(-RECENT_MAX);
   }
-  map.push(...entries);
-  if (map.length > 5000) {
-    map = map.slice(-5000);
-  }
-  await env.RF_MAP.put('entries', JSON.stringify(map));
+  pruneMap(db);
+  await saveDb(env, db);
 
-  return new Response(JSON.stringify({ ok: true, count: entries.length, total: map.length }), {
+  return new Response(JSON.stringify({ ok: true, count: entries.length, total: db.meta.total }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 }
 
 async function handleGetMap(env) {
-  const data = await env.RF_MAP.get('entries');
-  const entries = data ? JSON.parse(data) : [];
+  const db = await loadDb(env);
+  const aggregated = Object.keys(db.map).map(k => {
+    const sep = k.indexOf('_');
+    const g = db.map[k];
+    return {
+      bssid_hash: Number(k.slice(0, sep)),
+      hour: Number(k.slice(sep + 1)),
+      rssi_avg: Math.round(g.s / g.c),
+      rssi_min: g.mn,
+      rssi_max: g.mx,
+      ring_avg: g.rc ? Math.round(g.rs / g.rc) : null,
+      sample_count: g.c,
+      is_weak: g.wk > 0,
+    };
+  });
 
-  const bssidMap = {};
-  for (const e of entries) {
-    const key = `${e.bssid_hash}_${e.hour}`;
-    if (!bssidMap[key]) {
-      bssidMap[key] = {
-        bssid_hash: e.bssid_hash,
-        hour: e.hour,
-        rssi_values: [],
-        ring_values: [],
-        is_weak: false,
-      };
-    }
-    bssidMap[key].rssi_values.push(e.rssi);
-    if (e.ring != null) bssidMap[key].ring_values.push(e.ring);
-    if (e.is_weak) bssidMap[key].is_weak = true;
-  }
-
-  const aggregated = Object.values(bssidMap).map(v => ({
-    bssid_hash: v.bssid_hash,
-    hour: v.hour,
-    rssi_avg: Math.round(v.rssi_values.reduce((a, b) => a + b, 0) / v.rssi_values.length),
-    rssi_min: Math.min(...v.rssi_values),
-    rssi_max: Math.max(...v.rssi_values),
-    ring_avg: v.ring_values.length
-      ? Math.round(v.ring_values.reduce((a, b) => a + b, 0) / v.ring_values.length)
-      : null,
-    sample_count: v.rssi_values.length,
-    is_weak: v.is_weak,
-  }));
-
-  return new Response(JSON.stringify({ entries: aggregated, total: entries.length }), {
+  return new Response(JSON.stringify({ entries: aggregated, total: db.meta.total, weak: db.meta.weak }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 }
@@ -134,55 +221,41 @@ const DISTANCE_BUCKETS = [
 ];
 
 async function handleGetDistance(env) {
-  const data = await env.RF_MAP.get('entries');
-  const entries = data ? JSON.parse(data) : [];
+  const db = await loadDb(env);
 
-  /* Accumulate averages over time: bucket = (distance ring, hour). */
   const hourMap = {};
   for (let h = 0; h < 24; h++) hourMap[h] = {};
   const ringTotals = {};
   let totalSamples = 0;
   let weakSamples = 0;
 
-  for (const e of entries) {
-    if (e.rssi == null) continue;
-    const ring = e.ring != null ? e.ring : ringFromRssi(e.rssi);
-    const hour = (e.hour != null) ? e.hour : (e.timestamp ? new Date(e.timestamp).getHours() : 0);
-    if (hour < 0 || hour > 23) continue;
-
-    const bucketIdx = DISTANCE_BUCKETS.findIndex(b => ring >= b.min && ring <= b.max);
-    if (bucketIdx < 0) continue;
-
-    const key = `${bucketIdx}_${hour}`;
-    if (!hourMap[hour][bucketIdx]) {
-      hourMap[hour][bucketIdx] = { sum: 0, count: 0, max: -128, min: 0 };
-    }
-    const c = hourMap[hour][bucketIdx];
-    c.sum += e.rssi;
-    c.count++;
-    if (e.rssi > c.max) c.max = e.rssi;
-    if (e.rssi < c.min) c.min = e.rssi;
-
-    if (!ringTotals[bucketIdx]) ringTotals[bucketIdx] = { sum: 0, count: 0 };
-    ringTotals[bucketIdx].sum += e.rssi;
-    ringTotals[bucketIdx].count++;
-    totalSamples++;
-    if (e.is_weak || e.rssi < -75) weakSamples++;
+  for (const k of Object.keys(db.dist)) {
+    const sep = k.indexOf('_');
+    const b = Number(k.slice(0, sep));
+    const h = Number(k.slice(sep + 1));
+    const d = db.dist[k];
+    if (!hourMap[h][b]) hourMap[h][b] = d;
+    if (!ringTotals[b]) ringTotals[b] = { sum: 0, count: 0, wk: 0 };
+    ringTotals[b].sum += d.s;
+    ringTotals[b].count += d.c;
+    ringTotals[b].wk += d.wk;
+    totalSamples += d.c;
+    weakSamples += d.wk;
   }
 
   const cells = [];
   for (let h = 0; h < 24; h++) {
     for (let b = 0; b < DISTANCE_BUCKETS.length; b++) {
-      const c = hourMap[h][b];
-      if (!c || !c.count) continue;
+      const d = hourMap[h][b];
+      if (!d || !d.c) continue;
       cells.push({
         bucket: b,
         bucket_label: DISTANCE_BUCKETS[b].label,
         hour: h,
-        rssi_avg: Math.round(c.sum / c.count),
-        rssi_min: c.min,
-        rssi_max: c.max,
-        sample_count: c.count,
+        rssi_avg: Math.round(d.s / d.c),
+        rssi_min: d.mn,
+        rssi_max: d.mx,
+        sample_count: d.c,
       });
     }
   }
@@ -206,15 +279,12 @@ async function handleGetDistance(env) {
 }
 
 async function handleGetStatus(env) {
-  const data = await env.RF_MAP.get('entries');
-  const entries = data ? JSON.parse(data) : [];
-  const last_update = entries.length ? Math.max(...entries.map(e => e.timestamp || 0)) : 0;
-  const weak_count = entries.filter(e => e.is_weak).length;
+  const db = await loadDb(env);
 
   const status = {
-    last_update,
-    total_entries: entries.length,
-    weak_count,
+    last_update: db.meta.last_update,
+    total_entries: db.meta.total,
+    weak_count: db.meta.weak,
   };
 
   const dec = await env.RF_MAP.get('decision');
@@ -249,9 +319,8 @@ async function handleDecision(request, env) {
 
 async function handleGetHistory(url, env) {
   const limit = parseInt(url.searchParams.get('limit') || '100');
-  const data = await env.RF_MAP.get('entries');
-  const entries = data ? JSON.parse(data) : [];
-  const recent = entries.slice(-limit);
+  const db = await loadDb(env);
+  const recent = db.recent.slice(-limit);
   return new Response(JSON.stringify({ entries: recent }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
@@ -285,8 +354,8 @@ async function handleMetrics(request, env) {
   /* Single-write history (latest metric == last history item), so a
    * 10-minute firmware cadence stays far inside the KV free tier. */
   history.push(snapshot);
-  if (history.length > 200) {
-    history = history.slice(-200);
+  if (history.length > 2000) {
+    history = history.slice(-2000);
   }
   await env.RF_MAP.put('metrics_history', JSON.stringify(history));
 
@@ -357,7 +426,7 @@ async function handleImprovement(request, env) {
     try { hist = JSON.parse(existing); } catch (e) { hist = []; }
   }
   hist.push(sample);
-  if (hist.length > 5000) hist = hist.slice(-5000);
+  if (hist.length > 50000) hist = hist.slice(-50000);
   await env.RF_MAP.put('improvement', JSON.stringify(hist));
 
   return new Response(JSON.stringify({ ok: true, count: hist.length }), {
