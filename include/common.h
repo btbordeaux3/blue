@@ -38,11 +38,11 @@
 #define WIFI_CHANNEL         6
 
 #ifndef WIFI_SSID
-#define WIFI_SSID            "3bbo"
+#define WIFI_SSID            "YOUR_WIFI_SSID"
 #endif
 
 #ifndef WIFI_PASS
-#define WIFI_PASS            "WeLuvGville202"
+#define WIFI_PASS            "YOUR_WIFI_PASSWORD"
 #endif
 
 #ifndef REPEATER_SSID

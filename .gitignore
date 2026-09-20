@@ -1,6 +1,7 @@
 .pio
 .data
 data/
+include/wifi_creds.h
 .cache
 .dummy
 build/
